@@ -9,6 +9,9 @@ A fully local, owner-controlled cognitive AI agent.
 - API-only surface with its own API-key management (scoped, revocable).
 - Everything is counted: a durable usage ledger for requests, thoughts,
   decisions, actions, permissions, learning updates, memory and errors.
+- 0.3.0: a live web layer (dashboard + 15 SSE streams), a Vercel
+  serverless handler (free tier, /tmp storage, Telegram webhook mode)
+  and the same-repo Telegram master control - all still pure stdlib.
 
 Pure Python standard library. No external AI, no external APIs, no
 third-party packages. The agent is 100% the owner's code.
@@ -16,6 +19,6 @@ third-party packages. The agent is 100% the owner's code.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 __all__ = ["__version__"]

@@ -76,6 +76,34 @@ class Telegram:
             finally:
                 self._outbox.task_done()
 
+    def send_sync(self, text: str, chat_id: Optional[str] = None) -> bool:
+        """Deliver IMMEDIATELY (no outbox worker).
+
+        Webhook mode (Vercel serverless) needs this: the worker thread
+        would be frozen/killed with the function, so replies must go out
+        before the invocation ends.
+        """
+        if not self.enabled:
+            return False
+        try:
+            self._post("sendMessage", {"chat_id": chat_id or self.chat_id,
+                                       "text": text[:4000]})
+            self.storage.count("telegram", "sent_sync")
+            return True
+        except Exception:  # noqa: BLE001
+            self.storage.count("telegram", "send_failed")
+            return False
+
+    def set_webhook(self, url: str, secret_token: str = "") -> Any:
+        """Point the owner's bot at the Vercel deployment (webhook mode)."""
+        params: Dict[str, Any] = {"url": url, "drop_pending_updates": True}
+        if secret_token:
+            params["secret_token"] = secret_token
+        return self._post("setWebhook", params)
+
+    def delete_webhook(self) -> Any:
+        return self._post("deleteWebhook", {"drop_pending_updates": False})
+
     def _post(self, method: str, payload: Dict[str, Any],
               timeout: float = 10.0) -> Any:
         url = _API.format(token=self.token, method=method)
@@ -162,6 +190,31 @@ class TelegramMaster:
         reply = self._dispatch(text)
         if reply:
             self.tg.send(reply, chat_id=chat_id)
+
+    def handle_update(self, update: Dict[str, Any]) -> Optional[str]:
+        """Webhook mode (Vercel serverless): process one Telegram update.
+
+        Same authorization as the poller (only the owner chat is
+        honored), but the reply is sent synchronously - a serverless
+        invocation cannot rely on a background worker. Returns the reply
+        text (None when there is nothing to say).
+        """
+        msg = update.get("message") or {}
+        text = (msg.get("text") or "").strip()
+        chat_id = str((msg.get("chat") or {}).get("id", ""))
+        if not text:
+            return None
+        if chat_id != self.tg.chat_id:
+            self.agent.storage.count("telegram", "unauthorized_chat")
+            self.tg.send_sync("🚫 unauthorized chat - ignored.",
+                              chat_id=chat_id)
+            return None
+        self.agent.storage.count("telegram", "webhook_command",
+                                 detail={"cmd": text.split()[0][:24]})
+        reply = self._dispatch(text)
+        if reply:
+            self.tg.send_sync(reply, chat_id=chat_id)
+        return reply
 
     def _dispatch(self, text: str) -> str:
         parts = text.split()

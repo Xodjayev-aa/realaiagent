@@ -18,7 +18,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 def _now() -> float:
@@ -165,6 +165,11 @@ class Storage:
     """Thread-safe SQLite store with the universal counting ledger."""
 
     def __init__(self, db_path: Any) -> None:
+        # Live observers (e.g. the 0.3.0 SSE hub). Each hook is called as
+        # hook(source, name, data) with source in {"count", "event"};
+        # name is the category (count) or event type (log_event).
+        # Hooks must be cheap and never block; errors are swallowed.
+        self.hooks: List[Callable[[str, str, Dict[str, Any]], None]] = []
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -243,6 +248,19 @@ class Storage:
             self._total += 1
             cat = self._counters.setdefault(category, {})
             cat[event] = cat.get(event, 0) + 1
+        self._fire_hooks("count", category, {"category": category,
+                                             "event": event,
+                                             "detail": detail})
+
+    def _fire_hooks(self, source: str, name: str,
+                    data: Dict[str, Any]) -> None:
+        if not self.hooks:
+            return
+        for hook in list(self.hooks):
+            try:
+                hook(source, name, data)
+            except Exception:  # noqa: BLE001 - observers must not break count
+                pass
 
     def get_counters(self) -> Dict[str, Any]:
         """Full counter snapshot (nested by category, plus totals)."""
@@ -282,6 +300,7 @@ class Storage:
             (_now(), etype, json.dumps(payload or {})),
         )
         self.count("events", etype, key_id=key_id)
+        self._fire_hooks("event", etype, payload or {})
 
     def recent_events(self, limit: int = 50) -> List[Dict[str, Any]]:
         rows = self.query(
