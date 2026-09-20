@@ -402,11 +402,29 @@ Counters survive restarts (rebuilt from the ledger on boot).
 
 The whole product — API, live web dashboard, 15 SSE streams, and the
 Telegram webhook — is **one pure-stdlib Python serverless function**
-(`api/index.py`, routed by `vercel.json`). No frameworks, no external AI:
+(`api/index.py` + `api/[...path].py`, routed by `vercel.json`). No
+frameworks, no external AI:
 
 ```bash
 vercel --prod        # then point the bot at it (see Telegram section)
 ```
+
+> **Entrypoint contract (read this before changing `api/`).** `@vercel/python`
+> does **not** support the Lambda-style `handler(event, context) -> dict`.
+> Each `.py` under `/api` must define exactly one of:
+>
+> - `app` — an **ASGI or WSGI** application
+> - `application` — a **WSGI** application
+> - `handler` — a **class** inheriting from `BaseHTTPRequestHandler`
+>
+> Both entrypoints therefore export the WSGI callable from
+> `realaiagent/vercel.py`, and import it **absolutely**
+> (`from realaiagent.vercel import app`) — a relative `from .index import …`
+> dies at cold start with `ImportError: attempted relative import with no
+> known parent package`. Likewise `vercel.json` keys `functions` on the glob
+> **`api/**/*.py`**, not on `api/[...path].py`: in a glob, `[...path]` is a
+> *character class* and matches nothing, so `maxDuration` would silently
+> never apply.
 
 - **`/` · `/v1/…` · `/api.json` · `/healthz`** — the full API
 - **`/dashboard`** — live owner dashboard (EventSource, 15 topics)
@@ -458,7 +476,7 @@ systemctl start realai
 ## Testing
 
 ```bash
-python3 -m unittest discover -s . -p "test_*.py" -v   # 147 tests
+python3 -m unittest discover -s . -p "test_*.py" -v   # 166 tests
 ```
 
 Covers: NLP training/parsing, permission gate, executor (command/file/
@@ -474,8 +492,12 @@ replies, setWebhook params) against a fake gateway, plus the **0.3.0 web
 layer**: the 15 SSE topics (headers, open/window frames, since-cursor,
 Last-Event-ID replay, topic isolation, heartbeats, status snapshots,
 chat→plan feeding, web-token gate), the dashboard, and the **Vercel
-handler** (event shapes, base64 bodies, `/api` prefix, `/tmp` + `VERCEL=1`
-config, SSE window clamping).
+entrypoint** — both the dict-shaped event seam (event shapes, base64
+bodies, `/api` prefix) and the **WSGI adapter** `@vercel/python` actually
+invokes (bytes-only response chunks, `start_response` status lines,
+`environ` header/body/query mapping, JSON-500 error branch), plus the
+entrypoint-contract guards that keep the two historic 500s from returning
+(`/tmp` + `VERCEL=1` config and SSE window clamping included).
 
 ## Configuration
 
@@ -514,12 +536,13 @@ realaiagent/           the whole agent — pure Python stdlib
   users.py             users, approval, billing (the business layer)
   telegram.py          master control, webhook mode, free-will reports
   web.py               0.3.0 web layer: SSE hub (15 topics), dashboard
+  vercel.py            WSGI adapter the Vercel Python runtime actually loads
   actions/             permission gate, executor, built-in actions
   api/                 keys, HTTP server, routes (+ shared dispatch)
-api/                   0.3.0 Vercel serverless handler (free tier)
+api/                   0.3.0 Vercel serverless entrypoints (free tier)
 vercel.json            Vercel routing (dashboard, /stream/*, /webhook)
 examples/              client, device + webhook registration helpers
-tests/                 147 tests
+tests/                 166 tests
 data/                  created at runtime — all of its state (/tmp on Vercel)
 ```
 
