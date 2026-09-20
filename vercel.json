@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "functions": {
+    "api/index.py": { "maxDuration": 30 },
+    "api/[...path].py": { "maxDuration": 30 }
+  },
+  "rewrites": [
+    { "source": "/", "destination": "/api" },
+    { "source": "/webhook", "destination": "/api/webhook" },
+    { "source": "/dashboard", "destination": "/api/dashboard" },
+    { "source": "/stream/:topic", "destination": "/api/stream/:topic" },
+    { "source": "/:rest*", "destination": "/api/:rest*" }
+  ]
+}

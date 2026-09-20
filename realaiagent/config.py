@@ -49,6 +49,27 @@ class Config:
     telegram_poll: bool = True          # run the master-control poller
     autonomous_report_minutes: float = 60.0   # free-will report cadence
 
+    # --- Vercel serverless (free tier) -----------------------------------
+    # Vercel sets VERCEL=1 inside its functions. When detected, from_env()
+    # switches the data dir to the ephemeral /tmp disk and turns the
+    # long-poll telegram worker OFF (webhook mode instead - see
+    # api/index.py, which serves POST /webhook).
+    is_vercel: bool = False
+
+    # Shared secret Telegram sends in X-Telegram-Bot-Api-Secret-Token when
+    # the bot is in webhook mode (set via setWebhook). Empty = open
+    # webhook (fine locally, do not leave open in production).
+    telegram_webhook_secret: str = ""
+
+    # Optional shared secret guarding /dashboard and /stream/* (passed as
+    # ?token=... or the X-Web-Token header). Empty = public telemetry.
+    web_token: str = ""
+
+    # Max seconds a single SSE stream window stays open. Bounded because
+    # serverless functions freeze; the browser's EventSource reconnects
+    # (with Last-Event-ID) and the stream continues gapless.
+    sse_window: float = 20.0
+
     # Identity defaults
     agent_name: str = "REAL"
     owner_name: str = "Owner"
@@ -84,8 +105,15 @@ class Config:
                 return default
             return raw.strip().lower() in ("1", "true", "yes", "on")
 
+        # Vercel sets VERCEL=1 in its serverless functions; the only
+        # writable disk there is /tmp, and no long-running threads
+        # (so telegram switches from long-poll to webhook mode).
+        vercel = os.environ.get("VERCEL", "").strip().lower() in (
+            "1", "true", "yes", "on")
+
         return cls(
-            data_dir=Path(os.environ.get("REALAI_DATA_DIR", "data")),
+            data_dir=Path(os.environ.get(
+                "REALAI_DATA_DIR", "/tmp/realai" if vercel else "data")),
             host=os.environ.get("REALAI_HOST", "0.0.0.0"),
             port=int(os.environ.get("REALAI_PORT", "8100")),
             tick_seconds=float(os.environ.get("REALAI_TICK_SECONDS", "10")),
@@ -97,9 +125,15 @@ class Config:
                 "REALAI_DEFAULT_REQUEST_LIMIT", "2500")),
             telegram_bot_token=os.environ.get("REALAI_TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ.get("REALAI_TELEGRAM_CHAT_ID", ""),
-            telegram_poll=_bool("REALAI_TELEGRAM_POLL", True),
+            telegram_poll=_bool("REALAI_TELEGRAM_POLL", not vercel),
             autonomous_report_minutes=float(os.environ.get(
                 "REALAI_AUTONOMOUS_REPORT_MIN", "60")),
             agent_name=os.environ.get("REALAI_AGENT_NAME", "REAL"),
             owner_name=os.environ.get("REALAI_OWNER_NAME", "Owner"),
+            is_vercel=vercel,
+            telegram_webhook_secret=os.environ.get(
+                "REALAI_TELEGRAM_WEBHOOK_SECRET", ""),
+            web_token=os.environ.get("REALAI_WEB_TOKEN", ""),
+            sse_window=min(25.0, max(1.0, float(os.environ.get(
+                "REALAI_SSE_WINDOW", "20")))),
         )

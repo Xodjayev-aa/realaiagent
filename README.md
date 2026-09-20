@@ -308,6 +308,19 @@ Everything runs on the stdlib `urllib` — no third-party Telegram library.
 With no token configured, this whole layer is a no-op and the agent still
 works 100% offline.
 
+**Webhook mode (Vercel / serverless, 0.3.0):** on a serverless deploy the
+long-poll worker can't run, so the bot points at the deployment instead:
+
+```bash
+python examples/register_webhook.py https://your-app.vercel.app/webhook
+```
+
+The handler verifies the shared secret
+(`X-Telegram-Bot-Api-Secret-Token` vs `REALAI_TELEGRAM_WEBHOOK_SECRET`),
+runs the same owner-only command dispatch, and sends replies
+**synchronously** (before the invocation freezes). Same repo, same bot,
+same commands.
+
 ---
 
 ## Its own mind
@@ -385,6 +398,32 @@ Counters survive restarts (rebuilt from the ledger on boot).
 
 ## Deployment (keeping it stable & safe, per your plan)
 
+### Vercel (free tier) — 0.3.0
+
+The whole product — API, live web dashboard, 15 SSE streams, and the
+Telegram webhook — is **one pure-stdlib Python serverless function**
+(`api/index.py`, routed by `vercel.json`). No frameworks, no external AI:
+
+```bash
+vercel --prod        # then point the bot at it (see Telegram section)
+```
+
+- **`/` · `/v1/…` · `/api.json` · `/healthz`** — the full API
+- **`/dashboard`** — live owner dashboard (EventSource, 15 topics)
+- **`/stream/<topic>`** — SSE: `all, thoughts, actions, plans, chat,
+  learning, memory, goals, security, billing, devices, telegram,
+  health, status, errors`
+- **`/webhook`** — Telegram webhook (shared-secret verified)
+
+Serverless specifics, handled: state lives in **`/tmp`** (the only
+writable disk — `Config.from_env()` detects `VERCEL=1` and uses
+`/tmp/realai`); SSE responses are **bounded windows**
+(`REALAI_SSE_WINDOW`, default 20 s, hard cap 25 s, `maxDuration` 30) —
+EventSource auto-reconnects and resends `Last-Event-ID`, and the hub
+replays from there, so streams stay gapless across function freezes.
+
+### A machine (systemd / docker)
+
 The agent is a single process + one SQLite file. To run it as a real
 service:
 
@@ -419,7 +458,7 @@ systemctl start realai
 ## Testing
 
 ```bash
-python3 -m unittest discover -s . -p "test_*.py" -v   # 103 tests
+python3 -m unittest discover -s . -p "test_*.py" -v   # 147 tests
 ```
 
 Covers: NLP training/parsing, permission gate, executor (command/file/
@@ -429,8 +468,14 @@ ledger, the full HTTP API (auth, scopes, keys, rate-limit, the whole
 device→permission→approve→control flow, counters), the **user/billing
 ecosystem** (request→approve→key, billing charge/exhaust/402, VIP free,
 per-key limits, unapproved 403, ban/401, intrusion counting, usage view),
-and **Telegram master control** (command dispatch, owner-only chat,
-approve/deny/vip/topup, kill switch) against a fake gateway.
+**Telegram master control** (command dispatch, owner-only chat,
+approve/deny/vip/topup, kill switch) and **webhook mode** (synchronous
+replies, setWebhook params) against a fake gateway, plus the **0.3.0 web
+layer**: the 15 SSE topics (headers, open/window frames, since-cursor,
+Last-Event-ID replay, topic isolation, heartbeats, status snapshots,
+chat→plan feeding, web-token gate), the dashboard, and the **Vercel
+handler** (event shapes, base64 bodies, `/api` prefix, `/tmp` + `VERCEL=1`
+config, SSE window clamping).
 
 ## Configuration
 
@@ -448,8 +493,12 @@ Environment variables (all optional):
 | `REALAI_DEFAULT_REQUEST_LIMIT` | `2500` | per customer key |
 | `REALAI_TELEGRAM_BOT_TOKEN` | *(off)* | **your** bot token → enables master control + reports |
 | `REALAI_TELEGRAM_CHAT_ID` | *(off)* | your chat id for reports/alerts |
-| `REALAI_TELEGRAM_POLL` | `1` | run the Telegram master-control poller |
+| `REALAI_TELEGRAM_POLL` | `1` (off on Vercel) | run the Telegram master-control poller |
+| `REALAI_TELEGRAM_WEBHOOK_SECRET` | *(off)* | shared secret for `/webhook` (webhook mode) |
 | `REALAI_AUTONOMOUS_REPORT_MIN` | `60` | free-will report cadence (minutes) |
+| `REALAI_WEB_TOKEN` | *(off)* | shared secret for `/dashboard` + `/stream/*` |
+| `REALAI_SSE_WINDOW` | `20` | max SSE window seconds (clamped to 1–25) |
+| `VERCEL` | *(auto)* | Vercel sets `1` → data dir `/tmp/realai`, webhook mode |
 | `REALAI_AGENT_NAME` / `REALAI_OWNER_NAME` | `REAL` / `Owner` | identity |
 
 ## Files you own
@@ -461,14 +510,17 @@ realaiagent/           the whole agent — pure Python stdlib
   nlp.py               the trainable local language model
   planner.py           task planning
   learning.py          SGD intents, Q-table, skills, memory
-  storage.py           SQLite state + the universal ledger
+  storage.py           SQLite state + the universal ledger (+ live hooks)
   users.py             users, approval, billing (the business layer)
-  telegram.py          master control + free-will reports (optional)
+  telegram.py          master control, webhook mode, free-will reports
+  web.py               0.3.0 web layer: SSE hub (15 topics), dashboard
   actions/             permission gate, executor, built-in actions
-  api/                 keys, HTTP server, routes
-examples/              client + device registration helpers
-tests/                 103 tests
-data/                  created at runtime — all of its state
+  api/                 keys, HTTP server, routes (+ shared dispatch)
+api/                   0.3.0 Vercel serverless handler (free tier)
+vercel.json            Vercel routing (dashboard, /stream/*, /webhook)
+examples/              client, device + webhook registration helpers
+tests/                 147 tests
+data/                  created at runtime — all of its state (/tmp on Vercel)
 ```
 
 **MIT licensed. Yours.**
