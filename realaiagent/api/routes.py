@@ -41,6 +41,110 @@ def healthz(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
     })
 
 
+def index_page(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Human-friendly root page (the API is the product; this is its face)."""
+    snap = agent.mind.snapshot()
+    c = agent.storage.get_counters()
+    t = c.get("totals", {})
+    endpoints = [
+        ("POST", "/v1/chat", "talk to the agent  {\"message\": \"...\"}"),
+        ("GET", "/v1/status", "mind state: drives, mood, goals, counters"),
+        ("GET", "/v1/counters", "everything counted - the full ledger"),
+        ("GET", "/v1/usage?by=category|key|day", "usage breakdowns (admin)"),
+        ("GET", "/v1/events", "the agent's thoughts & actions log"),
+        ("GET", "/v1/goals", "goal queue"),
+        ("GET", "/v1/skills", "learned skills"),
+        ("GET", "/v1/devices", "registered devices"),
+        ("GET", "/v1/permissions", "policies + pending requests"),
+        ("GET", "/v1/users", "clients: PENDING/APPROVED/BANNED (owner)"),
+        ("POST", "/v1/learn", "train the language model (learn scope)"),
+        ("GET", "/healthz", "liveness (public)"),
+    ]
+    rows = "\n".join(
+        f"<tr><td class='m'>{m}</td><td class='p'>{p}</td><td>{d}</td></tr>"
+        for m, p, d in endpoints)
+    return 200, f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{snap['agent']} — RealAI Agent</title>
+<style>
+ :root {{ color-scheme: dark; }}
+ body {{ background:#0b0e14; color:#d7dce5; font:15px/1.55
+        ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif;
+        margin:0; padding:40px 20px; }}
+ main {{ max-width: 860px; margin: 0 auto; }}
+ h1 {{ font-size: 26px; margin: 0 0 4px; }}
+ .sub {{ color:#8b94a7; margin-bottom: 24px; }}
+ .card {{ background:#12161f; border:1px solid #1f2633; border-radius:12px;
+         padding:18px 20px; margin-bottom:16px; }}
+ .k {{ color:#8b94a7; font-size:12px; text-transform:uppercase;
+       letter-spacing:.08em; }}
+ .grid {{ display:grid; grid-template-columns:repeat(auto-fit,
+         minmax(150px,1fr)); gap:12px; }}
+ .v {{ font-size:18px; font-weight:600; margin-top:2px; }}
+ .ok {{ color:#3fd68f; }} .warn {{ color:#f5c542; }}
+ table {{ width:100%; border-collapse:collapse; font-size:13.5px; }}
+ td {{ padding:7px 10px; border-top:1px solid #1f2633;
+       vertical-align:top; }}
+ .m {{ color:#7aa2f7; font-family:ui-monospace,monospace; white-space:nowrap; }}
+ .p {{ color:#d7dce5; font-family:ui-monospace,monospace; }}
+ code {{ background:#1a2030; padding:1px 6px; border-radius:6px;
+         font-size:13px; }}
+ footer {{ color:#5c6577; font-size:12.5px; margin-top:20px; }}
+</style></head><body><main>
+ <h1>🤖 {snap['agent']} — RealAI Agent</h1>
+ <div class="sub">A fully local, owner-controlled cognitive AI agent —
+  pure Python, no external AI, no external keys. API-only (your UI talks
+  to <code>/v1/chat</code>).</div>
+
+ <div class="card"><div class="k">live status</div>
+  <div class="grid">
+   <div><div class="k">mood</div><div class="v ok">{snap['mood']['note']}</div></div>
+   <div><div class="k">autonomy</div>
+     <div class="v {'ok' if snap['autonomy'] else 'warn'}">{'ON' if snap['autonomy'] else 'OFF'}</div></div>
+   <div><div class="k">active goals</div><div class="v">{snap['active_goals']}</div></div>
+   <div><div class="k">thoughts</div><div class="v">{snap['thoughts']}</div></div>
+   <div><div class="k">uptime</div><div class="v">{snap['uptime_s']}s</div></div>
+   <div><div class="k">counted events</div><div class="v">{c.get('grand_total', 0)}</div></div>
+  </div>
+  <div style="margin-top:12px;color:#8b94a7;font-size:13.5px">
+   drives: {' · '.join(f'{k} {v:.2f}' for k, v in snap['drives'].items())}
+   &nbsp;|&nbsp; requests {t.get('requests',0)} · chat {t.get('chat',0)} ·
+   actions {t.get('actions',0)} · users {t.get('users',0)} ·
+   intrusions {c.get('security',{}).get('intrusion',0)}
+  </div>
+ </div>
+
+ <div class="card"><div class="k">endpoints (auth: <code>Authorization: Bearer &lt;key&gt;</code>)</div>
+  <table>{rows}
+   <tr><td class="m">full list</td><td class="p">/api.json</td>
+       <td>machine-readable index of every route</td></tr>
+  </table>
+ </div>
+
+ <div class="card"><div class="k">quick start</div>
+  <code>curl -X POST /v1/chat -H 'Authorization: Bearer &lt;key&gt;'
+  -H 'Content-Type: application/json' -d '{{"message":"status"}}'</code>
+ </div>
+
+ <footer>owner: {snap['owner']} · everything is counted ·
+  MIT — 100% your code</footer>
+</main></body></html>"""
+
+
+def api_index(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Machine-readable index of every route and its required scopes."""
+    routes = []
+    for method, path, scopes, handler in ROUTES:
+        routes.append({
+            "method": method,
+            "path": path,
+            "scopes": scopes or ["public"],
+        })
+    return _ok({"agent": agent.mind.snapshot()["agent"],
+                "routes": routes})
+
+
 # ------------------------------------------------------------------- status
 
 def status(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
@@ -495,6 +599,8 @@ def users_topup(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
 
 ROUTES: List[Tuple[str, str, List[str], Handler]] = [
     # (method, path, scopes (empty = public), handler)
+    ("GET", "/", [], index_page),
+    ("GET", "/api.json", [], api_index),
     ("GET", "/healthz", [], healthz),
 
     ("GET", "/v1/status", ["chat"], status),

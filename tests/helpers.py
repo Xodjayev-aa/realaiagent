@@ -56,14 +56,17 @@ class ApiClient:
         r.add_header("Content-Type", "application/json")
         if token:
             r.add_header("Authorization", f"Bearer {token}")
+        def _decode(raw: bytes):
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return raw.decode("utf-8", "replace")
+
         try:
             with urllib.request.urlopen(r, timeout=10) as resp:
-                return resp.status, json.loads(resp.read().decode())
+                return resp.status, _decode(resp.read())
         except urllib.error.HTTPError as e:
-            try:
-                return e.code, json.loads(e.read().decode())
-            except (ValueError, json.JSONDecodeError):
-                return e.code, {}
+            return e.code, _decode(e.read())
 
 
 def start_server(agent: Agent):

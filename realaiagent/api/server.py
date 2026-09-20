@@ -89,9 +89,14 @@ class ApiServer:
             def _send(self, status: int, payload: Any,
                       extra_headers: Optional[Dict[str, str]] = None,
                       request_id: str = "") -> None:
-                body = json.dumps(payload, default=str).encode("utf-8")
+                if isinstance(payload, str):
+                    body = payload.encode("utf-8")
+                    content_type = "text/html; charset=utf-8"
+                else:
+                    body = json.dumps(payload, default=str).encode("utf-8")
+                    content_type = "application/json"
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Methods",

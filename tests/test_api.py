@@ -29,6 +29,18 @@ class TestApi(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertIn("mood", body)
 
+    def test_01b_index_pages_public(self):
+        # the root must not 404 in a browser preview
+        code, html = self.anon.req("GET", "/")
+        self.assertEqual(code, 200)
+        self.assertIsInstance(html, str)
+        self.assertIn("RealAI Agent", html)
+        code, body = self.anon.req("GET", "/api.json")
+        self.assertEqual(code, 200)
+        paths = [r["path"] for r in body["routes"]]
+        self.assertIn("/v1/chat", paths)
+        self.assertIn("/v1/users/request", paths)
+
     def test_02_auth_required(self):
         code, _ = self.anon.req("GET", "/v1/status")
         self.assertEqual(code, 401)
