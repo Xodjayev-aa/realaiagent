@@ -1,7 +1,7 @@
 def get_app() -> WebApp:
     app = _STATE.get("app")
     if app is not None:
-        return app
+        return app 
     from realaiagent.config import Config
     from realaiagent.engine import Agent
     import os
