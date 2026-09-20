@@ -56,14 +56,35 @@ class TestStorage(unittest.TestCase):
 
     def test_keys_crud(self):
         self.s.key_insert("k1", "owner", "hash1", ["owner"])
-        self.s.key_insert("k2", "ui", "hash2", ["chat"])
+        self.s.key_insert("k2", "ui", "hash2", ["chat"],
+                          user="ui-user", request_limit=100)
         self.s.key_touch("k1")
+        self.assertEqual(self.s.key_bump_usage("k1"), 1)
+        self.assertEqual(self.s.key_bump_usage("k1"), 2)
         row = self.s.key_get_by_hash("hash1")
         self.assertEqual(row["scopes"], ["owner"])
-        self.assertEqual(row["request_count"], 1)
+        self.assertEqual(row["request_count"], 2)
+        self.assertEqual(row["user"], None)
+        row2 = self.s.key_get_by_hash("hash2")
+        self.assertEqual(row2["user"], "ui-user")
+        self.assertEqual(row2["request_limit"], 100)
         self.assertEqual(len(self.s.key_list()), 2)
         self.assertTrue(self.s.key_revoke("k1"))
         self.assertIsNone(self.s.key_get_by_hash("hash1"))
+
+    def test_users_crud_and_billing(self):
+        u = self.s.user_request("alice")
+        self.assertEqual(u["status"], "PENDING")
+        self.s.user_set_status("alice", "APPROVED")
+        self.assertEqual(self.s.user_get("alice")["status"], "APPROVED")
+        self.s.user_add_balance("alice", 1.0)
+        self.assertAlmostEqual(self.s.user_get("alice")["balance"], 1.0)
+        self.assertAlmostEqual(self.s.user_charge("alice", 0.35), 0.65)
+        self.s.user_set_vip("alice", True)
+        self.assertTrue(self.s.user_get("alice")["is_vip"])
+        self.assertEqual(
+            [x["username"] for x in self.s.user_list("APPROVED")],
+            ["alice"])
 
 
 if __name__ == "__main__":

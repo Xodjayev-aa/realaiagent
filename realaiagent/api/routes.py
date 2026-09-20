@@ -339,9 +339,17 @@ def keys_create(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
         return _err(400, "bad_request", "name is required")
     if not isinstance(scopes, list):
         return _err(400, "bad_request", "scopes must be a list")
+    request_limit = body.get("request_limit")
+    if request_limit is not None:
+        try:
+            request_limit = int(request_limit)
+        except (TypeError, ValueError):
+            return _err(400, "bad_request", "request_limit must be a number")
     try:
         key_id, plaintext, meta = agent.keys.create_key(
-            name, scopes, created_by=(ctx.get("key") or {}).get("name", "api"))
+            name, scopes,
+            created_by=(ctx.get("key") or {}).get("name", "api"),
+            user=body.get("user"), request_limit=request_limit)
     except ValueError as exc:
         return _err(400, "bad_request", str(exc))
     return _ok({"key": plaintext, **meta,
@@ -391,6 +399,98 @@ def owner_autonomy(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
     return _ok({"autonomy": on})
 
 
+# ------------------------------------------------------------- users / biz
+
+def users_request(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    username = str(body.get("username", "")).strip().lower()
+    if not username or len(username) > 48:
+        return _err(400, "bad_request", "username (1-48 chars) required")
+    scopes = body.get("scopes")
+    if scopes is not None and not isinstance(scopes, list):
+        return _err(400, "bad_request", "scopes must be a list")
+    user = agent.users.request(username, scopes=scopes,
+                               note=str(body.get("note", "")))
+    return _ok({
+        "status": "PENDING",
+        "username": user["username"],
+        "message": "Request received. The owner will approve or deny it "
+                   "(they are notified via their control channel).",
+    })
+
+
+def users_list(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    st = ctx.get("query", {}).get("status")
+    return _ok({"users": agent.users.list(st)})
+
+
+def users_usage(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    u = ctx["params"]["username"]
+    if not agent.storage.user_get(u):
+        return _err(404, "not_found", f"user {u} not found")
+    return _ok(agent.users.usage_for_user(u))
+
+
+def users_approve(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    u = ctx["params"]["username"]
+    try:
+        out = agent.users.approve(
+            u, scopes=body.get("scopes"),
+            request_limit=body.get("request_limit"))
+    except KeyError:
+        return _err(404, "not_found", f"user {u} not found")
+    user = {k: v for k, v in out.items()
+            if k not in ("api_key", "key_id", "key_scopes")}
+    return _ok({
+        "user": user,
+        "api_key": out["api_key"],
+        "key_id": out["key_id"],
+        "key_scopes": out["key_scopes"],
+        "note": "store this key now - it is not shown again",
+    })
+
+
+def users_deny(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    u = ctx["params"]["username"]
+    try:
+        out = agent.users.deny(u)
+    except KeyError:
+        return _err(404, "not_found", f"user {u} not found")
+    return _ok(out)
+
+
+def users_unban(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    u = ctx["params"]["username"]
+    try:
+        out = agent.users.unban(u)
+    except KeyError:
+        return _err(404, "not_found", f"user {u} not found")
+    return _ok(out)
+
+
+def users_vip(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    u = ctx["params"]["username"]
+    try:
+        out = agent.users.set_vip(u, bool(body.get("vip", True)))
+    except KeyError:
+        return _err(404, "not_found", f"user {u} not found")
+    return _ok(out)
+
+
+def users_topup(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    u = ctx["params"]["username"]
+    try:
+        amount = float(body.get("amount", 0))
+    except (TypeError, ValueError):
+        return _err(400, "bad_request", "amount must be a number")
+    if amount <= 0:
+        return _err(400, "bad_request", "amount must be positive")
+    try:
+        out = agent.users.topup(u, amount)
+    except KeyError:
+        return _err(404, "not_found", f"user {u} not found")
+    return _ok(out)
+
+
 # ------------------------------------------------------------------ routing
 
 ROUTES: List[Tuple[str, str, List[str], Handler]] = [
@@ -433,6 +533,15 @@ ROUTES: List[Tuple[str, str, List[str], Handler]] = [
     ("GET", "/v1/keys", ["owner"], keys_list),
     ("POST", "/v1/keys", ["owner"], keys_create),
     ("POST", "/v1/keys/{id}/revoke", ["owner"], keys_revoke),
+
+    ("POST", "/v1/users/request", [], users_request),
+    ("GET", "/v1/users", ["owner"], users_list),
+    ("GET", "/v1/users/{username}/usage", ["owner"], users_usage),
+    ("POST", "/v1/users/{username}/approve", ["owner"], users_approve),
+    ("POST", "/v1/users/{username}/deny", ["owner"], users_deny),
+    ("POST", "/v1/users/{username}/unban", ["owner"], users_unban),
+    ("POST", "/v1/users/{username}/vip", ["owner"], users_vip),
+    ("POST", "/v1/users/{username}/topup", ["owner"], users_topup),
 
     ("GET", "/v1/owner/state", ["owner"], owner_state),
     ("POST", "/v1/owner/identity", ["owner"], owner_identity),

@@ -38,8 +38,20 @@ CREATE TABLE IF NOT EXISTS keys (
     created_at REAL NOT NULL,
     last_used REAL,
     revoked INTEGER NOT NULL DEFAULT 0,
-    request_count INTEGER NOT NULL DEFAULT 0
+    request_count INTEGER NOT NULL DEFAULT 0,
+    user TEXT,
+    request_limit INTEGER
 );
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    is_vip INTEGER NOT NULL DEFAULT 0,
+    balance REAL NOT NULL DEFAULT 0.0,
+    created_at REAL NOT NULL,
+    last_active REAL
+);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE TABLE IF NOT EXISTS usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -158,8 +170,17 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns to tables created by older versions (idempotent)."""
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(keys)")}
+        if "user" not in cols:
+            self._conn.execute("ALTER TABLE keys ADD COLUMN user TEXT")
+        if "request_limit" not in cols:
+            self._conn.execute("ALTER TABLE keys ADD COLUMN request_limit INTEGER")
         # In-memory counters: {"category": {"event": n}} and a grand total.
         self._counters: Dict[str, Dict[str, int]] = {}
         self._total = 0
@@ -278,11 +299,14 @@ class Storage:
 
     # ------------------------------------------------------------------ keys
 
-    def key_insert(self, key_id: str, name: str, key_hash: str, scopes: List[str]) -> None:
+    def key_insert(self, key_id: str, name: str, key_hash: str, scopes: List[str],
+                   user: Optional[str] = None,
+                   request_limit: Optional[int] = None) -> None:
         self.execute(
-            "INSERT INTO keys(id, name, key_hash, scopes, created_at) "
-            "VALUES(?,?,?,?,?)",
-            (key_id, name, key_hash, json.dumps(scopes), _now()),
+            "INSERT INTO keys(id, name, key_hash, scopes, created_at, user, "
+            "request_limit) VALUES(?,?,?,?,?,?,?)",
+            (key_id, name, key_hash, json.dumps(scopes), _now(), user,
+             request_limit),
         )
 
     def key_get_by_hash(self, key_hash: str) -> Optional[Dict[str, Any]]:
@@ -305,9 +329,96 @@ class Storage:
 
     def key_touch(self, key_id: str) -> None:
         self.execute(
-            "UPDATE keys SET last_used=?, request_count=request_count+1 "
-            "WHERE id=?", (_now(), key_id),
+            "UPDATE keys SET last_used=? WHERE id=?", (_now(), key_id),
         )
+
+    def key_bump_usage(self, key_id: str) -> int:
+        """Increment request_count; return the new value."""
+        self.execute(
+            "UPDATE keys SET request_count=request_count+1, last_used=? "
+            "WHERE id=?", (_now(), key_id))
+        row = self.query_one("SELECT request_count FROM keys WHERE id=?",
+                             (key_id,))
+        return int(row["request_count"]) if row else 0
+
+    def key_set_limit(self, key_id: str, limit: Optional[int]) -> None:
+        self.execute("UPDATE keys SET request_limit=? WHERE id=?",
+                     (limit, key_id))
+
+    # ----------------------------------------------------------------- users
+
+    def user_request(self, username: str) -> Dict[str, Any]:
+        """Create (or re-request) a user account as PENDING."""
+        username = username.strip()
+        existing = self.query_one("SELECT * FROM users WHERE username=?",
+                                  (username,))
+        if existing:
+            self.execute(
+                "UPDATE users SET status='PENDING' WHERE username=?",
+                (username,))
+            self.count("users", "re_requested")
+            return self.user_get(username) or {}
+        self.execute(
+            "INSERT INTO users(username, status, created_at) VALUES(?,?,?)",
+            (username, "PENDING", _now()))
+        self.count("users", "requested")
+        self.log_event("user_requested", {"username": username})
+        return self.user_get(username) or {}
+
+    def user_get(self, username: str) -> Optional[Dict[str, Any]]:
+        row = self.query_one("SELECT * FROM users WHERE username=?",
+                             (username,))
+        if row:
+            row["is_vip"] = bool(row["is_vip"])
+        return row
+
+    def user_list(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        if status:
+            rows = self.query(
+                "SELECT * FROM users WHERE status=? ORDER BY created_at DESC",
+                (status,))
+        else:
+            rows = self.query("SELECT * FROM users ORDER BY created_at DESC")
+        for r in rows:
+            r["is_vip"] = bool(r["is_vip"])
+        return rows
+
+    def user_set_status(self, username: str, status: str) -> Optional[Dict[str, Any]]:
+        cur = self.execute(
+            "UPDATE users SET status=? WHERE username=?", (status, username))
+        if cur.rowcount:
+            self.count("users", f"status_{status.lower()}")
+            self.log_event("user_status", {"username": username,
+                                           "status": status})
+        return self.user_get(username)
+
+    def user_set_vip(self, username: str, vip: bool) -> Optional[Dict[str, Any]]:
+        self.execute("UPDATE users SET is_vip=? WHERE username=?",
+                     (1 if vip else 0, username))
+        self.count("users", "vip_granted" if vip else "vip_revoked")
+        return self.user_get(username)
+
+    def user_add_balance(self, username: str, amount: float) -> Optional[Dict[str, Any]]:
+        self.execute(
+            "UPDATE users SET balance=ROUND(balance+?, 6) WHERE username=?",
+            (amount, username))
+        self.count("billing", "topup")
+        self.log_event("billing_topup", {"username": username,
+                                         "amount": amount})
+        return self.user_get(username)
+
+    def user_charge(self, username: str, amount: float) -> Optional[float]:
+        """Atomically deduct `amount`; return new balance or None."""
+        self.execute(
+            "UPDATE users SET balance=ROUND(balance-?, 6) WHERE username=?",
+            (amount, username))
+        row = self.query_one("SELECT balance FROM users WHERE username=?",
+                             (username,))
+        return float(row["balance"]) if row else None
+
+    def user_touch(self, username: str) -> None:
+        self.execute("UPDATE users SET last_active=? WHERE username=?",
+                     (_now(), username))
 
     # ------------------------------------------------------------ usage query
 

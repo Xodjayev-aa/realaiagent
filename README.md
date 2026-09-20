@@ -20,7 +20,16 @@ You are the owner. You:
   and it additionally learns action policies (Q-learning) and reusable
   skills from what succeeds;
 - **inspect and steer its mind** — drives, mood, goals, memory, values;
-- **kill-switch its autonomy** at any time.
+- **kill-switch its autonomy** at any time;
+- run it as a **business**: approve clients (PENDING → APPROVED /
+  BANNED), mint each of them an API key, charge per request or grant
+  **VIP** (free), watch **security alerts** — all from the API or from
+  **Telegram** with your own bot.
+
+The agent also runs a **business layer** (the "null-49.private"
+ecosystem from your plan): multi-user access control, per-user API keys,
+balance/VIP billing, per-key request limits, intrusion detection, and an
+autonomous "free-will" reporting channel to your Telegram.
 
 > **What this is:** a self-contained cognitive engine — a trainable local
 > NLP classifier, a planner, an autonomous goal loop, a memory system, a
@@ -231,6 +240,37 @@ action `pattern`.
 - `notify` and `timer.set` are allowed by default (harmless).
 - Chat shortcuts: `approve 7` / `deny 7` / `approve it` (latest).
 
+### Users & billing (the business layer)
+
+The agent runs a client-access business on top of itself. A client
+requests access, the owner approves (which mints the client an API key),
+and each request the client makes is billed from their balance — unless
+they're VIP.
+
+| Method & path | Scope | Description |
+|---|---|---|
+| `POST /v1/users/request` | **public** | `{"username": "alice"}` → creates a `PENDING` account; the owner is notified |
+| `GET /v1/users?status=PENDING` | `owner` | list users (optional filter PENDING/APPROVED/BANNED), with their keys |
+| `GET /v1/users/{u}/usage` | `owner` | a user's balance + keys + usage |
+| `POST /v1/users/{u}/approve` | `owner` | approve + **mint an API key** (returns the plaintext once). Optional `{"request_limit": 1000, "scopes": [...]}` |
+| `POST /v1/users/{u}/deny` | `owner` | ban + revoke all their keys |
+| `POST /v1/users/{u}/unban` | `owner` | set back to PENDING |
+| `POST /v1/users/{u}/vip` | `owner` | `{"vip": true}` — free forever (no billing) |
+| `POST /v1/users/{u}/topup` | `owner` | `{"amount": 10}` — add to their balance |
+
+**Billing rules** (per request, for customer keys only):
+
+- owner key → always free, no limit
+- banned / unknown user → `403` + **intrusion logged** (+ Telegram alert)
+- not approved → `403`
+- per-key request limit reached → `429`
+- non-VIP with balance < cost → `402 Payment Required`
+- otherwise the cost (default `0.05`) is deducted and the request proceeds
+
+Everything about this is counted: `users.requested / status_* / vip_*`,
+`billing.charged / topup / vip_free`, `security.intrusion`, per-key
+`request_count` vs `request_limit`.
+
 ### Owner controls (the "i control it" part)
 
 | Method & path | Scope | Description |
@@ -239,6 +279,34 @@ action `pattern`.
 | `POST /v1/owner/identity` | `owner` | `{"agent_name": "MIRA", "owner_name": "Alex"}` |
 | `POST /v1/owner/values` | `owner` | `{"drives": {"curiosity": 0.9, "duty": 0.7}}` |
 | `POST /v1/owner/autonomy` | `owner` | `{"on": false}` — **kill switch**: the agent still answers you but stops spontaneous thinking |
+
+### Telegram master control (optional, your own bot)
+
+Set `REALAI_TELEGRAM_BOT_TOKEN` (from @BotFather — **your** bot) and
+`REALAI_TELEGRAM_CHAT_ID` (your chat id) and the agent:
+
+- **reports to you on its own "free will"** — a periodic check-in with its
+  mood, activity, counts, pending users, and any intrusion attempts;
+- **alerts you about security** — invalid/banned keys, in near-real-time;
+- **notifies you of new access requests** — with approve/deny commands;
+- **obeys you from Telegram** (only your chat id is honored):
+
+```
+/status      my state (mood, drives, goals)
+/report      full counted ledger
+/users [st]  list users (PENDING/APPROVED/BANNED)
+/approve x   approve user + mint their API key
+/deny x      ban user, revoke their keys
+/vip x       make a user free (VIP) / normal
+/topup x 10  add 10.00 to a user's balance
+/keys        list API keys
+/kill /on    autonomy kill switch
+/chat <msg>  talk to the agent as the owner
+```
+
+Everything runs on the stdlib `urllib` — no third-party Telegram library.
+With no token configured, this whole layer is a no-op and the agent still
+works 100% offline.
 
 ---
 
@@ -305,7 +373,37 @@ Counters survive restarts (rebuilt from the ledger on boot).
                  │             system.command · files.*   │
                  │             http.request · notify …    │
                  └────────────────────────────────────────┘
+
+   BUSINESS LAYER (null-49.private):
+   users (PENDING/APPROVED/BANNED) · per-user API keys · balance/VIP
+   billing · per-key limits · intrusion detection
+        │                                        │
+        ▼                                        ▼
+   Telegram master control              autonomous "free-will"
+   (/approve /deny /vip /topup …)       reports + security alerts
 ```
+
+## Deployment (keeping it stable & safe, per your plan)
+
+The agent is a single process + one SQLite file. To run it as a real
+service:
+
+```bash
+# e.g. systemd: keep it alive, restart on crash, run as a dedicated user
+systemctl start realai
+```
+
+- **Expose only the API port** (8100) through your firewall — the data
+  dir (DB, pepper, owner key) must never be reachable from the network.
+  Any other AI engine you might run later (e.g. a local model on 11434)
+  should stay loopback-only, behind this gateway.
+- **Rate limiting** is built in (per-key token bucket) — tune it with
+  `REALAI_RATE_PER_MIN`.
+- **All SQL is parameterized** (no injection), all JSON is size-capped,
+  all subprocess/HTTP actions have hard timeouts.
+- It is **stable by design**: WAL-mode SQLite, counters rebuilt from the
+  ledger on boot, autonomy loop wrapped so a bad thought can never crash
+  the process.
 
 ## Safety
 
@@ -321,14 +419,18 @@ Counters survive restarts (rebuilt from the ledger on boot).
 ## Testing
 
 ```bash
-python3 -m unittest discover -s . -p "test_*.py" -v   # 77 tests
+python3 -m unittest discover -s . -p "test_*.py" -v   # 103 tests
 ```
 
 Covers: NLP training/parsing, permission gate, executor (command/file/
 device/scope), planner (single/chain/skill), mind (drives/mood/goals/
 consolidation/kill switch), learning (intents/Q/skills/memory), storage
-ledger, and the full HTTP API (auth, scopes, keys, rate-limit, the whole
-device→permission→approve→control flow, counters).
+ledger, the full HTTP API (auth, scopes, keys, rate-limit, the whole
+device→permission→approve→control flow, counters), the **user/billing
+ecosystem** (request→approve→key, billing charge/exhaust/402, VIP free,
+per-key limits, unapproved 403, ban/401, intrusion counting, usage view),
+and **Telegram master control** (command dispatch, owner-only chat,
+approve/deny/vip/topup, kill switch) against a fake gateway.
 
 ## Configuration
 
@@ -339,8 +441,15 @@ Environment variables (all optional):
 | `REALAI_DATA_DIR` | `data` | all state lives here (db, pepper, owner key) |
 | `REALAI_HOST` / `REALAI_PORT` | `0.0.0.0` / `8100` | bind address |
 | `REALAI_TICK_SECONDS` | `10` | autonomy thinking interval |
-| `REALAI_RATE_PER_MIN` | `60` | per-key rate limit |
+| `REALAI_RATE_PER_MIN` | `60` | per-key rate limit (token bucket) |
 | `REALAI_FILE_ROOTS` | data dir | paths `files.*` actions may touch (`:`-separated) |
+| `REALAI_BILLING` | `1` | enable per-request billing (0 = off) |
+| `REALAI_REQUEST_COST` | `0.05` | charged per request for non-VIP users |
+| `REALAI_DEFAULT_REQUEST_LIMIT` | `2500` | per customer key |
+| `REALAI_TELEGRAM_BOT_TOKEN` | *(off)* | **your** bot token → enables master control + reports |
+| `REALAI_TELEGRAM_CHAT_ID` | *(off)* | your chat id for reports/alerts |
+| `REALAI_TELEGRAM_POLL` | `1` | run the Telegram master-control poller |
+| `REALAI_AUTONOMOUS_REPORT_MIN` | `60` | free-will report cadence (minutes) |
 | `REALAI_AGENT_NAME` / `REALAI_OWNER_NAME` | `REAL` / `Owner` | identity |
 
 ## Files you own
@@ -353,10 +462,12 @@ realaiagent/           the whole agent — pure Python stdlib
   planner.py           task planning
   learning.py          SGD intents, Q-table, skills, memory
   storage.py           SQLite state + the universal ledger
+  users.py             users, approval, billing (the business layer)
+  telegram.py          master control + free-will reports (optional)
   actions/             permission gate, executor, built-in actions
   api/                 keys, HTTP server, routes
 examples/              client + device registration helpers
-tests/                 77 tests
+tests/                 103 tests
 data/                  created at runtime — all of its state
 ```
 

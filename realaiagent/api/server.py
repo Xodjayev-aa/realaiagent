@@ -146,6 +146,17 @@ class ApiServer:
                     token = auth[7:] if auth.startswith("Bearer ") else auth
                     key_row = agent.keys.verify(token) if token else None
                     if key_row is None:
+                        if token:
+                            # someone presented a key that does not exist
+                            agent.storage.count("security", "intrusion")
+                            agent.storage.log_event("intrusion", {
+                                "reason": "invalid_key",
+                                "path": f"{method} {path}"})
+                            agent.telegram.send(
+                                "🚨 [Security] an invalid API key was "
+                                f"presented for {method} {path}",
+                                dedup_key="intrusion-invalid",
+                                min_interval=60)
                         self._count_request(None, method + " " + path,
                                             401, t0)
                         return self._send(401, {"error": {
@@ -167,6 +178,27 @@ class ApiServer:
                             "code": "rate_limited",
                             "message": "too many requests"}},
                             request_id=request_id)
+
+                    # ---- user/billing gate (customer keys)
+                    bill = agent.users.authorize_request(key_row)
+                    if not bill.ok:
+                        if bill.intrusion:
+                            agent.storage.count("security", "intrusion")
+                            agent.storage.log_event("intrusion", {
+                                "reason": bill.code,
+                                "user": key_row.get("user"),
+                                "path": f"{method} {path}"})
+                            agent.telegram.send(
+                                "🚨 [Security] " + bill.message,
+                                dedup_key=f"intrusion-{bill.code}",
+                                min_interval=60)
+                        self._count_request(key_row["id"], method + " " + path,
+                                            bill.status, t0)
+                        return self._send(bill.status, {"error": {
+                            "code": bill.code, "message": bill.message}},
+                            request_id=request_id)
+
+                    agent.storage.key_bump_usage(key_row["id"])
 
                 # ---- body
                 body: Dict[str, Any] = {}

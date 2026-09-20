@@ -8,6 +8,8 @@ class TestApi(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.agent = make_agent()
+        cls.agent.cfg.rate_limit_per_min = 100_000
+        cls.agent.cfg.rate_burst = 10_000
         cls.server = start_server(cls.agent)
         _, cls.owner_key, _ = cls.agent.keys.ensure_owner_key()
         cls.base = f"http://127.0.0.1:{cls.server.bound_port}"

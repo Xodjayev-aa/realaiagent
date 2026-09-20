@@ -37,6 +37,18 @@ class Config:
     # Path roots that file actions may touch unless the owner widens them.
     file_roots: List[Path] = field(default_factory=list)
 
+    # Business / billing (the "null-49.private" ecosystem)
+    billing_enabled: bool = True
+    request_cost: float = 0.05          # charged per request for non-VIP users
+    default_request_limit: int = 2500   # per customer key (None = unlimited)
+
+    # Telegram master control + autonomous reports (optional).
+    # Use YOUR OWN bot (token from @BotFather). Off unless a token is set.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""          # the owner's chat id
+    telegram_poll: bool = True          # run the master-control poller
+    autonomous_report_minutes: float = 60.0   # free-will report cadence
+
     # Identity defaults
     agent_name: str = "REAL"
     owner_name: str = "Owner"
@@ -65,6 +77,13 @@ class Config:
         """Build a Config from REALAI_* environment variables (all optional)."""
         roots = os.environ.get("REALAI_FILE_ROOTS", "")
         root_list = [Path(p) for p in roots.split(os.pathsep) if p]
+
+        def _bool(name: str, default: bool) -> bool:
+            raw = os.environ.get(name)
+            if raw is None:
+                return default
+            return raw.strip().lower() in ("1", "true", "yes", "on")
+
         return cls(
             data_dir=Path(os.environ.get("REALAI_DATA_DIR", "data")),
             host=os.environ.get("REALAI_HOST", "0.0.0.0"),
@@ -72,6 +91,15 @@ class Config:
             tick_seconds=float(os.environ.get("REALAI_TICK_SECONDS", "10")),
             rate_limit_per_min=int(os.environ.get("REALAI_RATE_PER_MIN", "60")),
             file_roots=root_list,
+            billing_enabled=_bool("REALAI_BILLING", True),
+            request_cost=float(os.environ.get("REALAI_REQUEST_COST", "0.05")),
+            default_request_limit=int(os.environ.get(
+                "REALAI_DEFAULT_REQUEST_LIMIT", "2500")),
+            telegram_bot_token=os.environ.get("REALAI_TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=os.environ.get("REALAI_TELEGRAM_CHAT_ID", ""),
+            telegram_poll=_bool("REALAI_TELEGRAM_POLL", True),
+            autonomous_report_minutes=float(os.environ.get(
+                "REALAI_AUTONOMOUS_REPORT_MIN", "60")),
             agent_name=os.environ.get("REALAI_AGENT_NAME", "REAL"),
             owner_name=os.environ.get("REALAI_OWNER_NAME", "Owner"),
         )

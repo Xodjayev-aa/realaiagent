@@ -59,7 +59,8 @@ class KeyManager:
     # ------------------------------------------------------------- keys api
 
     def create_key(self, name: str, scopes: List[str],
-                   created_by: str = "owner") -> Tuple[str, str, dict]:
+                   created_by: str = "owner", user: Optional[str] = None,
+                   request_limit: Optional[int] = None) -> Tuple[str, str, dict]:
         bad = [s for s in scopes if s not in VALID_SCOPES]
         if bad:
             raise ValueError(f"invalid scopes: {bad} "
@@ -70,14 +71,15 @@ class KeyManager:
             scopes = list(dict.fromkeys(scopes)) or ["chat"]
         key_id = f"key-{secrets.token_hex(8)}"
         plaintext = "rxa_" + secrets.token_urlsafe(28)
-        self.storage.key_insert(key_id, name, self._hash(plaintext), scopes)
+        self.storage.key_insert(key_id, name, self._hash(plaintext), scopes,
+                                user=user, request_limit=request_limit)
         self.storage.count("keys", "created", detail={"name": name})
         self.storage.log_event("key_created", {
-            "id": key_id, "name": name, "scopes": scopes,
+            "id": key_id, "name": name, "scopes": scopes, "user": user,
             "by": created_by})
         return key_id, plaintext, {
-            "id": key_id, "name": name, "scopes": scopes,
-            "created_at": time.time(),
+            "id": key_id, "name": name, "scopes": scopes, "user": user,
+            "request_limit": request_limit, "created_at": time.time(),
         }
 
     def ensure_owner_key(self) -> Tuple[str, str, bool]:

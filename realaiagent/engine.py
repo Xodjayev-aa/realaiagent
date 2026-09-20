@@ -31,6 +31,8 @@ from .mind import Mind
 from .nlp import IntentModel, parse_message
 from .planner import Plan, Planner, Step
 from .storage import Storage
+from .telegram import Telegram
+from .users import UserManager
 
 
 class Agent:
@@ -47,7 +49,11 @@ class Agent:
         self.planner = Planner()
         self.permissions = PermissionManager(self.storage)
         self.keys = KeyManager(self.storage, cfg.pepper_path, cfg)
+        self.users = UserManager(self.storage, self.keys, cfg)
         self.executor = ActionExecutor(self.storage, self.permissions, cfg)
+        self.telegram = Telegram(cfg.telegram_bot_token,
+                                 cfg.telegram_chat_id, self.storage)
+        self.users.notifier = self.telegram
         self.executor.on_q_update = self.learner.q_update
         self.executor.state_builder = self._q_state
         self._msg_lock = threading.Lock()

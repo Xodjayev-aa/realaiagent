@@ -101,6 +101,26 @@ def main() -> int:
         code, body = c.req("POST", f"/v1/permissions/pending/{pid}/approve")
         print("  approved #", pid, "->", body.get("status"))
 
+    # Business layer: a client requests access, we approve + bill them.
+    print("\n== business: onboard a client ==")
+    code, body = c.req("POST", "/v1/users/request",
+                       {"username": "demo-client"})
+    print(" ", body.get("status"), body.get("message", "")[:40])
+    code, body = c.req("POST", "/v1/users/demo-client/approve",
+                       {"request_limit": 100})
+    if code == 200:
+        print("  approved; their key:", body["api_key"][:18], "…")
+        c.req("POST", "/v1/users/demo-client/topup", {"amount": 0.10})
+        client = Client(args.base, body["api_key"])
+        print("  client makes 2 paid requests:")
+        for i in range(2):
+            ccode, _ = client.req("GET", "/v1/status")
+            print(f"    request {i+1} -> {ccode}")
+    code, body = c.req("GET", "/v1/users?status=APPROVED")
+    for u in body.get("users", []):
+        print(f"  user {u['username']}: {u['status']} "
+              f"vip={u['is_vip']} balance={u['balance']:.2f}")
+
     return 0
 
 

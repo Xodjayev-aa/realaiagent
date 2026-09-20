@@ -89,7 +89,38 @@ def run_demo(data_dir: str = "data/demo") -> int:
                 "params": {"action": "on"}, "device_id": "lamp-1"}])
     _say(agent, "what are your goals")
 
-    # 8. show its mind + the ledger
+    # 8. business layer: a client requests access, you approve, billing
+    print("\n" + "─" * 62)
+    print("  business layer (null-49.private style)")
+    print("─" * 62)
+    agent.users.request("student1")
+    print("👤 student1 requested access  -> PENDING")
+    approval = agent.users.approve("student1", request_limit=50)
+    print(f"✅ approved; their API key (shown once): {approval['api_key'][:18]}…")
+    agent.users.topup("student1", 0.15)
+    print("💰 topped up student1 with 0.15 (cost 0.05/request)")
+    key_row = agent.storage.key_get_by_hash(
+        agent.keys._hash(approval["api_key"]))
+    for i in range(3):
+        res = agent.users.authorize_request(key_row)
+        print(f"   request {i+1}: "
+              f"{'OK, charged' if res.ok else 'BLOCKED ' + res.code}")
+    res = agent.users.authorize_request(key_row)
+    print(f"   request 4: BLOCKED {res.code} "
+          f"(balance exhausted -> 402 Payment Required)")
+    agent.users.set_vip("student1", True)
+    agent.users.topup("student1", 0.05)
+    res = agent.users.authorize_request(key_row)
+    print(f"   VIP granted -> next request: "
+          f"{'OK, free (VIP never pays)' if res.ok else res.code}")
+    summary = []
+    for u in agent.users.list():
+        summary.append(
+            (u["username"], u["status"], u["is_vip"],
+             round(u["balance"], 2)))
+    print(f"   users now: {summary}")
+
+    # 9. show its mind + the ledger
     _say(agent, "counters")
     snap = agent.mind.snapshot()
     print(f"\n🧠 mind snapshot: mood={snap['mood']['note']} "

@@ -38,13 +38,26 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     print("  try     : curl -H 'Authorization: Bearer <key>' "
           "http://127.0.0.1:%d/v1/chat -d '{\"message\":\"status\"}' -X POST"
           % args.port)
+    print(f"  billing  : {'on' if cfg.billing_enabled else 'off'} "
+          f"(cost {cfg.request_cost:.2f}/req, "
+          f"limit {cfg.default_request_limit}/key, VIP free)")
+    if agent.telegram.enabled:
+        print("  telegram : master control + autonomous reports ON")
+    else:
+        print("  telegram : off (set REALAI_TELEGRAM_BOT_TOKEN + "
+              "REALAI_TELEGRAM_CHAT_ID to enable)")
     print("=" * 62, flush=True)
 
     agent.start()
     server = ApiServer(agent, cfg.host, cfg.port)
 
+    from .telegram import TelegramMaster
+    master = TelegramMaster(agent.telegram, agent, agent.users)
+    master.start()
+
     def _sig(_signum, _frame):
         print("\nshutting down…", flush=True)
+        master.stop()
         agent.stop()
         server.shutdown()
         sys.exit(0)
@@ -54,6 +67,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         server.serve_forever()
     finally:
+        master.stop()
         agent.stop()
     return 0
 
