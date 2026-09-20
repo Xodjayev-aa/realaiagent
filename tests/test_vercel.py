@@ -215,7 +215,7 @@ class TestWsgiAdapter(VercelBase):
     def test_root_serves_agent_index(self):
         rv = self.wsgi(path="/")
         self.assertIn("text/html", self.started[0]["headers"]["Content-Type"])
-        self.assertIn(b"RealAI", b"".join(rv))
+        self.assertIn(b"talk to it", b"".join(rv))
 
     def test_api_prefix_stripped(self):
         self.wsgi(path="/api/healthz")

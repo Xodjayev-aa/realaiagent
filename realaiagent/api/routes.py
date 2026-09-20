@@ -10,6 +10,9 @@ server. Owner scope implies everything.
 from __future__ import annotations
 
 import json
+import threading
+import time
+from string import Template
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..engine import Agent
@@ -42,7 +45,13 @@ def healthz(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
 
 
 def index_page(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
-    """Human-friendly root page (the API is the product; this is its face)."""
+    """The public face: a usable AI website, open to everyone.
+
+    Anyone can chat with the agent right here (keyless, rate-limited demo).
+    The raw ``/v1/*`` API stays gated behind owner-issued keys, so the owner
+    alone decides who gets programmatic access - exactly the split the
+    project is built around.
+    """
     snap = agent.mind.snapshot()
     c = agent.storage.get_counters()
     t = c.get("totals", {})
@@ -63,73 +72,193 @@ def index_page(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
     rows = "\n".join(
         f"<tr><td class='m'>{m}</td><td class='p'>{p}</td><td>{d}</td></tr>"
         for m, p, d in endpoints)
-    return 200, f"""<!doctype html>
+    html = _INDEX_HTML.substitute(
+        agent=snap["agent"], owner=snap["owner"],
+        mood=snap["mood"]["note"],
+        grand=c.get("grand_total", 0),
+        chat=t.get("chat", 0), rows=rows)
+    return 200, html
+
+
+_INDEX_HTML = Template("""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{snap['agent']} — RealAI Agent</title>
+<title>$agent — your own AI, live</title>
 <style>
- :root {{ color-scheme: dark; }}
- body {{ background:#0b0e14; color:#d7dce5; font:15px/1.55
+ :root { color-scheme: dark; }
+ body { background:#0b0e14; color:#d7dce5; font:15px/1.55
         ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif;
-        margin:0; padding:40px 20px; }}
- main {{ max-width: 860px; margin: 0 auto; }}
- h1 {{ font-size: 26px; margin: 0 0 4px; }}
- .sub {{ color:#8b94a7; margin-bottom: 24px; }}
- .card {{ background:#12161f; border:1px solid #1f2633; border-radius:12px;
-         padding:18px 20px; margin-bottom:16px; }}
- .k {{ color:#8b94a7; font-size:12px; text-transform:uppercase;
-       letter-spacing:.08em; }}
- .grid {{ display:grid; grid-template-columns:repeat(auto-fit,
-         minmax(150px,1fr)); gap:12px; }}
- .v {{ font-size:18px; font-weight:600; margin-top:2px; }}
- .ok {{ color:#3fd68f; }} .warn {{ color:#f5c542; }}
- table {{ width:100%; border-collapse:collapse; font-size:13.5px; }}
- td {{ padding:7px 10px; border-top:1px solid #1f2633;
-       vertical-align:top; }}
- .m {{ color:#7aa2f7; font-family:ui-monospace,monospace; white-space:nowrap; }}
- .p {{ color:#d7dce5; font-family:ui-monospace,monospace; }}
- code {{ background:#1a2030; padding:1px 6px; border-radius:6px;
-         font-size:13px; }}
- footer {{ color:#5c6577; font-size:12.5px; margin-top:20px; }}
+        margin:0; padding:36px 20px; }
+ main { max-width: 920px; margin: 0 auto; }
+ h1 { font-size: 30px; margin: 0 0 4px; }
+ .tag { color:#8b94a7; font-size:15px; margin-bottom:22px; }
+ .tag b { color:#3fd68f; }
+ .card { background:#12161f; border:1px solid #1f2633; border-radius:14px;
+         padding:18px 20px; margin-bottom:16px; }
+ .k { color:#8b94a7; font-size:12px; text-transform:uppercase;
+      letter-spacing:.08em; margin-bottom:10px; }
+ /* chat */
+ #chatlog { background:#0e1219; border:1px solid #1f2633; border-radius:10px;
+            height:260px; overflow-y:auto; padding:12px;
+            font:13.5px/1.6 ui-sans-serif,system-ui,sans-serif; }
+ .msg { margin:0 0 10px; word-break:break-word; }
+ .who { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+        color:#8b94a7; }
+ .who.me { color:#7aa2f7; } .who.ai { color:#3fd68f; }
+ .rowline { display:flex; gap:8px; margin-top:10px; }
+ #chatinput { flex:1; background:#0e1219; color:#d7dce5; border:1px solid
+              #1f2633; border-radius:10px; padding:10px 12px; font:inherit; }
+ #chatinput:focus { outline:none; border-color:#33405a; }
+ button.send { background:#1d2a44; color:#fff; border:1px solid #7aa2f7;
+               border-radius:10px; padding:10px 18px; font:inherit;
+               cursor:pointer; }
+ button.send:disabled { opacity:.5; cursor:wait; }
+ .hint { color:#5c6577; font-size:12px; margin-top:8px; }
+ /* control */
+ .grid3 { display:grid; grid-template-columns:repeat(auto-fit,
+          minmax(220px,1fr)); gap:12px; }
+ .tile { background:#0e1219; border:1px solid #1f2633; border-radius:10px;
+         padding:12px; }
+ .tile h3 { margin:0 0 4px; font-size:14px; }
+ .tile p { margin:0; color:#8b94a7; font-size:12.5px; }
+ .ok { color:#3fd68f; } .warn { color:#f5c542; }
+ table { width:100%; border-collapse:collapse; font-size:13px; }
+ td { padding:6px 9px; border-top:1px solid #1f2633; vertical-align:top; }
+ .m { color:#7aa2f7; font-family:ui-monospace,monospace; white-space:nowrap; }
+ .p { color:#d7dce5; font-family:ui-monospace,monospace; }
+ code { background:#1a2030; padding:1px 6px; border-radius:6px; font-size:13px; }
+ footer { color:#5c6577; font-size:12.5px; margin-top:18px; }
+ a { color:#7aa2f7; }
 </style></head><body><main>
- <h1>🤖 {snap['agent']} — RealAI Agent</h1>
- <div class="sub">A fully local, owner-controlled cognitive AI agent —
-  pure Python, no external AI, no external keys. API-only (your UI talks
-  to <code>/v1/chat</code>).</div>
+ <h1>🤖 $agent</h1>
+ <div class="tag">A cognitive AI built <b>from scratch</b> — pure Python, no
+  external AI, no external keys. It lives here, it's <b>yours</b>, and anyone
+  can say hello below.</div>
 
- <div class="card"><div class="k">live status</div>
-  <div class="grid">
-   <div><div class="k">mood</div><div class="v ok">{snap['mood']['note']}</div></div>
-   <div><div class="k">autonomy</div>
-     <div class="v {'ok' if snap['autonomy'] else 'warn'}">{'ON' if snap['autonomy'] else 'OFF'}</div></div>
-   <div><div class="k">active goals</div><div class="v">{snap['active_goals']}</div></div>
-   <div><div class="k">thoughts</div><div class="v">{snap['thoughts']}</div></div>
-   <div><div class="k">uptime</div><div class="v">{snap['uptime_s']}s</div></div>
-   <div><div class="k">counted events</div><div class="v">{c.get('grand_total', 0)}</div></div>
+ <div class="card"><div class="k">talk to it — no key needed</div>
+  <div id="chatlog">
+    <div class="msg"><span class="who ai">$agent</span><div>Hi! I'm $agent, a
+     self-contained AI with my own mind, memory and goals. Ask me anything —
+     try "status", or tell me something to remember.</div>
   </div>
-  <div style="margin-top:12px;color:#8b94a7;font-size:13.5px">
-   drives: {' · '.join(f'{k} {v:.2f}' for k, v in snap['drives'].items())}
-   &nbsp;|&nbsp; requests {t.get('requests',0)} · chat {t.get('chat',0)} ·
-   actions {t.get('actions',0)} · users {t.get('users',0)} ·
-   intrusions {c.get('security',{}).get('intrusion',0)}
+  <div class="rowline">
+    <input id="chatinput" placeholder="Say something to $agent…"
+           autocomplete="off">
+    <button class="send" id="send">Send</button>
+  </div>
+  <div class="hint">Public demo is rate-limited. For programmatic access, the
+   owner issues API keys below.</div>
+ </div>
+
+ <div class="card"><div class="k">who's in charge? you are.</div>
+  <div class="grid3">
+    <div class="tile"><h3 class="ok">You own the keys</h3>
+      <p>API clients start <b>PENDING</b>. You approve, ban or VIP them.
+       No key → no API. The website stays open; the API is yours to gate.</p></div>
+    <div class="tile"><h3 class="ok">Train it yourself</h3>
+      <p>Teach intents and facts with <code>/v1/learn</code> or by chatting.
+       It's a from-scratch model you can shape — nothing is pretrained.</p></div>
+    <div class="tile"><h3 class="warn">Everything is counted</h3>
+      <p>Every request, thought and action hits a durable ledger you can audit
+       in the <a href="/dashboard">live dashboard</a>.</p></div>
   </div>
  </div>
 
- <div class="card"><div class="k">endpoints (auth: <code>Authorization: Bearer &lt;key&gt;</code>)</div>
-  <table>{rows}
+ <div class="card"><div class="k">for developers (auth:
+   <code>Authorization: Bearer &lt;key&gt;</code>)</div>
+  <table>$rows
    <tr><td class="m">full list</td><td class="p">/api.json</td>
        <td>machine-readable index of every route</td></tr>
   </table>
  </div>
 
- <div class="card"><div class="k">quick start</div>
-  <code>curl -X POST /v1/chat -H 'Authorization: Bearer &lt;key&gt;'
-  -H 'Content-Type: application/json' -d '{{"message":"status"}}'</code>
- </div>
-
- <footer>owner: {snap['owner']} · everything is counted ·
+ <footer>owner: $owner · mood: $mood · $grand events counted ·
   MIT — 100% your code</footer>
-</main></body></html>"""
+</main>
+<script>
+var log = document.getElementById("chatlog");
+var inp = document.getElementById("chatinput");
+var btn = document.getElementById("send");
+function esc(s){return String(s).replace(/[&<>"]/g,function(ch){
+  return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch];});}
+function add(who, cls, text){
+  var d=document.createElement("div"); d.className="msg";
+  d.innerHTML='<span class="who '+cls+'">'+who+'</span><div>'+esc(text)+'</div>';
+  log.appendChild(d); log.scrollTop=log.scrollHeight;
+}
+function send(){
+  var text=(inp.value||"").trim(); if(!text) return;
+  btn.disabled=true; add("you","me",text); inp.value="";
+  fetch("/public/chat",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({message:text})})
+  .then(function(r){return r.json();})
+  .then(function(j){
+    btn.disabled=false;
+    if(j && j.response){ add("$agent","ai",j.response); }
+    else { add("$agent","ai",(j&&j.error&&j.error.message)||"no reply"); }
+    inp.focus();
+  })
+  .catch(function(e){ btn.disabled=false;
+    add("$agent","ai","network error — try again"); });
+}
+btn.addEventListener("click",send);
+inp.addEventListener("keydown",function(e){ if(e.key==="Enter"){ send(); } });
+</script></body></html>""")
+
+
+# --------------------------------------------------- public demo chat
+#
+# The website is open to everyone, so this chat runs keyless and with no
+# scopes: the engine's permission gate still applies, so nothing privileged
+# can be triggered from here. A single small shared token bucket keeps the
+# demo modest; real clients use /v1/chat with an owner-issued key, where
+# each key gets its own bucket in the server.
+
+
+class _PublicLimiter:
+    """One shared token bucket for the keyless demo chat."""
+
+    def __init__(self, rate_per_min: int = 10, burst: int = 5) -> None:
+        self.rate = rate_per_min / 60.0
+        self.burst = float(burst)
+        self._lock = threading.Lock()
+        self._tokens = float(burst)
+        self._last = time.time()
+
+    def allow(self) -> bool:
+        now = time.time()
+        with self._lock:
+            self._tokens = min(
+                self.burst, self._tokens + (now - self._last) * self.rate)
+            self._last = now
+            if self._tokens < 1.0:
+                return False
+            self._tokens -= 1.0
+            return True
+
+
+_public_demo_limiter = _PublicLimiter()
+
+
+def public_chat(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Keyless demo chat behind the public website.
+
+    No API key, no scopes, a 4000-char cap and a small shared rate limit.
+    Programmatic access stays on the gated ``/v1/chat``.
+    """
+    text = str(body.get("message", "")).strip()
+    if not text:
+        return _err(400, "bad_request", "message is required")
+    if len(text) > 4000:
+        return _err(400, "bad_request", "message too long (max 4000)")
+    if not _public_demo_limiter.allow():
+        agent.storage.count("chat", "demo_rate_limited")
+        return _err(429, "rate_limited",
+                    "public demo is rate-limited - try again shortly, or "
+                    "use /v1/chat with an owner-issued key")
+    res = agent.handle_message(text, sender="website-demo", scopes=[])
+    return _ok({**res, "request_id": ctx.get("request_id")})
 
 
 def api_index(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
@@ -600,6 +729,7 @@ def users_topup(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
 ROUTES: List[Tuple[str, str, List[str], Handler]] = [
     # (method, path, scopes (empty = public), handler)
     ("GET", "/", [], index_page),
+    ("POST", "/public/chat", [], public_chat),
     ("GET", "/api.json", [], api_index),
     ("GET", "/healthz", [], healthz),
 

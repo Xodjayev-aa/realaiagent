@@ -426,7 +426,11 @@ vercel --prod        # then point the bot at it (see Telegram section)
 > *character class* and matches nothing, so `maxDuration` would silently
 > never apply.
 
-- **`/` · `/v1/…` · `/api.json` · `/healthz`** — the full API
+- **`/`** — the public website: a live, keyless **demo chat** anyone can
+  use (`POST /public/chat`, rate-limited), plus "who's in charge" and a
+  developer API reference. The website is open to everyone.
+- **`/v1/…` · `/api.json` · `/healthz`** — the raw API, gated behind
+  owner-issued keys (you decide who gets one)
 - **`/dashboard`** — live owner dashboard (EventSource, 15 topics)
 - **`/stream/<topic>`** — SSE: `all, thoughts, actions, plans, chat,
   learning, memory, goals, security, billing, devices, telegram,
@@ -476,7 +480,7 @@ systemctl start realai
 ## Testing
 
 ```bash
-python3 -m unittest discover -s . -p "test_*.py" -v   # 166 tests
+python3 -m unittest discover -s . -p "test_*.py" -v   # 168 tests
 ```
 
 Covers: NLP training/parsing, permission gate, executor (command/file/
