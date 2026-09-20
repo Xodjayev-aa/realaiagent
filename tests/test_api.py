@@ -34,11 +34,14 @@ class TestApi(unittest.TestCase):
         code, html = self.anon.req("GET", "/")
         self.assertEqual(code, 200)
         self.assertIsInstance(html, str)
-        self.assertIn("RealAI Agent", html)
+        # the website: demo chat box + keyless endpoint reference
+        self.assertIn("talk to it", html)
+        self.assertIn("/public/chat", html)
         code, body = self.anon.req("GET", "/api.json")
         self.assertEqual(code, 200)
         paths = [r["path"] for r in body["routes"]]
         self.assertIn("/v1/chat", paths)
+        self.assertIn("/public/chat", paths)
         self.assertIn("/v1/users/request", paths)
 
     def test_02_auth_required(self):
@@ -62,6 +65,32 @@ class TestApi(unittest.TestCase):
         code, body = self.owner.req("POST", "/v1/chat", {})
         self.assertEqual(code, 400)
         self.assertEqual(body["error"]["code"], "bad_request")
+
+    def test_06_public_chat_keyless(self):
+        # the website's demo chat: no key, no scopes
+        code, body = self.anon.req("POST", "/public/chat",
+                                   {"message": "hello there"})
+        self.assertEqual(code, 200)
+        self.assertIsInstance(body["response"], str)
+        self.assertEqual(body["meta"]["intent"], "greet")
+        code, body = self.anon.req("POST", "/public/chat", {})
+        self.assertEqual(code, 400)
+        self.assertEqual(body["error"]["code"], "bad_request")
+
+    def test_07_public_chat_rate_limited(self):
+        import realaiagent.api.routes as R
+        saved = R._public_demo_limiter
+        R._public_demo_limiter = R._PublicLimiter(rate_per_min=0, burst=1)
+        try:
+            code, _ = self.anon.req("POST", "/public/chat",
+                                    {"message": "hello"})
+            self.assertEqual(code, 200)
+            code, body = self.anon.req("POST", "/public/chat",
+                                       {"message": "hello again"})
+            self.assertEqual(code, 429)
+            self.assertEqual(body["error"]["code"], "rate_limited")
+        finally:
+            R._public_demo_limiter = saved
 
     # ------------------------------------------------------------ full flow
 
