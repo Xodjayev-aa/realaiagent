@@ -83,6 +83,8 @@ ERROR_CODES: Tuple[Tuple[str, str], ...] = (
     ("409 conflict", "that id already exists (e.g. a device)"),
     ("413 body_too_large", "request body over REALAI_MAX_BODY bytes"),
     ("429 rate_limited", "token bucket empty — per key, or per demo visitor"),
+    ("429 too_many_attempts", "too many wrong web tokens from your address — "
+                              "the owner surfaces are locked out briefly"),
     ("500 internal", "the agent raised; it is counted in the ledger"),
 )
 
@@ -1114,13 +1116,12 @@ function setDisabled(nodes, on){
 function act(username, action, vip){
   var body = { action: action, username: username };
   if (vip !== undefined && vip !== null) body.vip = vip;
-  if (TOKEN) body.token = TOKEN;
   var btns = buttonsFor(username);
   setDisabled(btns, true);
   fetch("/approve", {
     method: "POST",
     headers: { "Content-Type": "application/json",
-               "X-Web-Token": TOKEN || "" },
+               "X-Web-Token": TOKEN || "" },  // secret travels here, never in the body
     body: JSON.stringify(body)
   }).then(function(r){
     return r.json().then(function(j){ return [r.status, j]; });
@@ -1256,6 +1257,38 @@ def approve_page(agent: Any, token: str = "",
                   "Owner approval inbox: approve, deny, unban and VIP.")
             + body + _footer(agent) + _NAV_JS
             + _APPROVE_JS.replace("@@TOKEN@@", esc(token or "")))
+
+
+def locked_page(retry: int) -> str:
+    """A human-readable 429 for the gated surfaces.
+
+    Wrong web tokens are counted per visitor (see ``web.TokenGuard``); once a
+    visitor trips the lockout this page tells them plainly what happened and
+    how long to wait, instead of handing back a bare status code.
+    """
+    retry = max(1, int(retry))
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,"
+        "initial-scale=1\"><title>RealAI — too many attempts</title>"
+        "<meta http-equiv=\"refresh\" content=\"" + str(retry) + "\">"
+        "<style>body{background:#0b0e14;color:#d7dce5;margin:0;"
+        "font:15px/1.6 ui-sans-serif,system-ui,sans-serif;display:flex;"
+        "align-items:center;justify-content:center;min-height:100vh}"
+        "main{background:#12161f;border:1px solid #1f2633;border-radius:14px;"
+        "padding:26px;max-width:460px;width:calc(100% - 40px)}h1{font-size:19px;"
+        "margin:0 0 8px}p{color:#8b94a7;font-size:13.5px;margin:0 0 10px}"
+        "code{background:#0e1219;border:1px solid #1f2633;border-radius:6px;"
+        "padding:1px 6px;color:#7aa2f7}a{color:#7aa2f7}</style></head>"
+        "<body><main><h1>Too many wrong web tokens</h1>"
+        "<p>This visitor has been locked out of the owner surfaces for about "
+        "<code>" + str(retry) + "s</code>. The page reloads itself when the "
+        "lockout expires.</p>"
+        "<p>The attempt was counted in the agent ledger and the owner was "
+        "told — this gate protects key minting, so it is deliberately "
+        "unforgiving.</p>"
+        "<p><a href=\"/\">← back to the chat app</a></p>"
+        "</main></body></html>")
 
 
 # ------------------------------------------------------------------ plumbing

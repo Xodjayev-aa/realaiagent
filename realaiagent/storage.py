@@ -176,6 +176,16 @@ CREATE INDEX IF NOT EXISTS idx_session_turns
 class Storage:
     """Thread-safe SQLite store with the universal counting ledger."""
 
+    #: Housekeeping for ``session_turns``. The web chat persists every turn so
+    #: a reload keeps its memory, which means a public server would grow that
+    #: table without bound. Turns are trimmed per session and the table is
+    #: capped globally; both are enforced automatically every
+    #: ``SESSION_PRUNE_EVERY`` inserts and can be forced by calling
+    #: :meth:`session_prune`.
+    SESSION_KEEP_PER_SESSION = 60
+    SESSION_MAX_ROWS = 20000
+    SESSION_PRUNE_EVERY = 128
+
     def __init__(self, db_path: Any) -> None:
         # Live observers (e.g. the 0.3.0 SSE hub). Each hook is called as
         # hook(source, name, data) with source in {"count", "event"};
@@ -201,6 +211,7 @@ class Storage:
         # In-memory counters: {"category": {"event": n}} and a grand total.
         self._counters: Dict[str, Dict[str, int]] = {}
         self._total = 0
+        self._turn_writes = 0
         self._rebuild_counters()
 
     # ------------------------------------------------------------------ core
@@ -343,7 +354,14 @@ class Storage:
             "response, intent, slots) VALUES(?,?,?,?,?,?,?)",
             (session_id, _now(), sender, message, response, intent,
              json.dumps(slots or {})))
-        return int(cur.lastrowid or 0)
+        row_id = int(cur.lastrowid or 0)
+        self._turn_writes += 1
+        if self._turn_writes % self.SESSION_PRUNE_EVERY == 0:
+            try:
+                self.session_prune()
+            except Exception:  # pragma: no cover - housekeeping is best effort
+                pass
+        return row_id
 
     def session_turns(self, session_id: str,
                       limit: int = 12) -> List[Dict[str, Any]]:
@@ -376,6 +394,52 @@ class Storage:
         cur = self.execute("DELETE FROM session_turns WHERE session_id=?",
                            (session_id,))
         return cur.rowcount > 0
+
+    def session_prune(self, keep_per_session: Optional[int] = None,
+                      max_rows: Optional[int] = None) -> int:
+        """Trim the conversation history; returns the number of rows deleted.
+
+        Two bounds, cheapest first:
+
+        1. **Per session** — keep only the newest ``keep_per_session`` turns.
+           A session is a browser tab, and nothing reads back more than
+           ``conversation_turns`` of them, so the tail is pure ballast.
+        2. **Global** — cap the table at ``max_rows``, dropping oldest-first
+           across every session. This is what stops a flood of throwaway
+           session ids from filling the disk even when each one is short. It
+           is an explicit ceiling and is applied last, so it wins even when it
+           is smaller than the per-session keep.
+
+        Only sessions that actually exceed the cap are touched, so the common
+        case is one indexed ``GROUP BY`` and no writes.
+        """
+        keep = max(1, int(keep_per_session or self.SESSION_KEEP_PER_SESSION))
+        cap = max(1, int(max_rows or self.SESSION_MAX_ROWS))
+        deleted = 0
+        for row in self.query(
+                "SELECT session_id FROM session_turns GROUP BY session_id "
+                "HAVING COUNT(*) > ?", (keep,)):
+            cutoff = self.query_one(
+                "SELECT MIN(id) AS m FROM (SELECT id FROM session_turns "
+                "WHERE session_id=? ORDER BY id DESC LIMIT ?)",
+                (row["session_id"], keep))
+            if not cutoff or cutoff["m"] is None:
+                continue
+            cur = self.execute(
+                "DELETE FROM session_turns WHERE session_id=? AND id < ?",
+                (row["session_id"], cutoff["m"]))
+            deleted += max(0, cur.rowcount)
+        total = self.query_one("SELECT COUNT(*) AS n FROM session_turns")
+        if total and int(total["n"] or 0) > cap:
+            excess = int(total["n"]) - cap
+            cur = self.execute(
+                "DELETE FROM session_turns WHERE id IN (SELECT id FROM "
+                "session_turns ORDER BY id ASC LIMIT ?)", (excess,))
+            deleted += max(0, cur.rowcount)
+        if deleted:
+            self.count("storage", "session_turns_pruned",
+                       detail={"deleted": deleted})
+        return deleted
 
     def search_memories(self, terms: Any, limit: int = 5,
                         kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:

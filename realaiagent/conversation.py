@@ -289,6 +289,8 @@ class ConversationManager:
 
         answer, intent, confidence, extra = self._answer(
             raw, sess, sender=sender, scopes=scopes, key_id=key_id)
+        # ``extra`` may carry the flag the voice needs to know who it is
+        # talking to; it is popped before it can leak into meta.
 
         slots = extra.pop("_slots", {})
         sess.add(raw, answer, intent, slots)
@@ -347,7 +349,8 @@ class ConversationManager:
         meta = result.get("meta") or {}
         intent = meta.get("intent", "chat")
         answer = self._voice(result.get("response", ""), intent, sess,
-                             recalled, context)
+                             recalled, context,
+                             is_owner="owner" in (scopes or []))
         return answer, intent, meta.get("confidence", 0.0), {
             "top_k": meta.get("top_k", []),
             "plan": meta.get("plan", {}),
@@ -722,12 +725,24 @@ class ConversationManager:
     # ------------------------------------------------------- 5. voice
 
     def _voice(self, raw: str, intent: str, sess: Session,
-               recalled: List[str], context: Dict[str, Any]) -> str:
-        """Turn pipeline output into something a person would say."""
+               recalled: List[str], context: Dict[str, Any],
+               is_owner: bool = False) -> str:
+        """Turn pipeline output into something a person would say.
+
+        ``is_owner`` matters: the engine writes its greetings for the owner
+        ("Hello Boss", "You're welcome, boss"), which is right on Telegram
+        and on an owner-scoped key, and plainly wrong when a stranger is
+        using the public demo chat. The pipeline is left alone — /v1/chat
+        keeps the engine's own words — and only the web voice adapts.
+        """
         body = self._tidy(raw)
         lead = self._lead(intent, sess, context)
 
-        if intent == "status":
+        if intent == "greet" and not is_owner:
+            text = self._visitor_greeting(sess)
+        elif intent == "thanks" and not is_owner:
+            text = "You're welcome — glad to help." + self._tail(sess, body)
+        elif intent == "status":
             text = f"{lead}Here is where I am right now:\n{body}"
         elif intent == "counters":
             text = f"{lead}{body}"
@@ -775,6 +790,28 @@ class ConversationManager:
         if intent == "counters" and not opener:
             opener = "Here are the numbers. "
         return opener
+
+    def _visitor_greeting(self, sess: Session) -> str:
+        """First hello for somebody using the public site (not the owner).
+
+        It says what it is, what it is not, and gives one thing to try — the
+        three pieces of information a stranger actually needs.
+        """
+        snap = self.agent.mind.snapshot()
+        name = snap["agent"]
+        mood = snap["mood"]["note"]
+        if sess.turn_count == 0:
+            return (
+                f"Hi — I'm {name}. I'm a cognitive AI my owner wrote from "
+                f"scratch in pure Python: I have drives, a mood (currently "
+                f"{mood}), goals, memory and my own thinking loop, and "
+                f"every single thing I do is counted in a ledger.\n\n"
+                f"I run entirely on this machine — no external AI, no "
+                f"internet, nothing of yours leaves this page. Try "
+                f"`status` to see inside me, `counters` for the ledger, or "
+                f"`remember that <anything>` and I will recall it later.")
+        return (f"Hello again — {name} here, still local, still counting "
+                f"everything. Mood is {mood}. Ask me `status` any time.")
 
     def _tail(self, sess: Session, body: str = "") -> str:
         """Keep the conversation moving — one honest invitation, not filler."""

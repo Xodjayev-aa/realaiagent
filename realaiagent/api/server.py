@@ -15,11 +15,13 @@ import json
 import re
 import threading
 import time
+import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
+from .. import __version__
 from ..engine import Agent
 from . import routes as R
 
@@ -225,6 +227,34 @@ def dispatch(agent: Agent, limiter: _RateLimiter, method: str, path: str,
             "code": "internal", "message": str(exc)}})
 
 
+def _crash_response(exc: BaseException, path: str,
+                    storage: Any) -> Tuple[int, str, bytes, Dict[str, str]]:
+    """Turn an unexpected web-layer error into the standard 500 envelope.
+
+    ``ThreadingHTTPServer`` prints a traceback and abandons the connection
+    when a handler raises, so the browser sees a dropped request and the
+    ledger sees nothing. The route dispatcher already guards its handlers
+    (``errors/http_500``); this covers the web layer around them — pages,
+    SSE, the dashboard — so a crash anywhere in the threaded server is
+    reported the same way and counted the same way.
+    """
+    detail = f"{type(exc).__name__}: {exc}"
+    try:
+        storage.count("errors", "http_500", detail={"path": path,
+                                                    "error": detail})
+        storage.log_event("error", {"kind": "http_500", "path": path,
+                                    "error": detail})
+    except Exception:  # pragma: no cover - counting must never fail loudly
+        pass
+    try:
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+    except Exception:  # pragma: no cover
+        pass
+    body = json.dumps({"error": {
+        "code": "internal", "message": str(exc)}}).encode("utf-8")
+    return 500, "application/json", body, {"X-Request-Id": "-"}
+
+
 class ApiServer:
     """The threaded HTTP server.
 
@@ -257,7 +287,10 @@ class ApiServer:
         max_body = self.agent.cfg.max_body_bytes
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "RealAI/0.3"
+            # derived from the package version so the Server header can
+            # never drift from what is actually running
+            server_version = "RealAI/" + ".".join(
+                __version__.split(".")[:2])
             protocol_version = "HTTP/1.1"
 
             # ---------------------------------------------------- plumbing
@@ -276,7 +309,7 @@ class ApiServer:
                 self.send_header("Access-Control-Allow-Methods",
                                  "GET, POST, DELETE, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers",
-                                 "Authorization, Content-Type")
+                                 "Authorization, Content-Type, X-Web-Token")
                 for k, v in extra_headers.items():
                     self.send_header(k, v)
                 self.end_headers()
@@ -289,7 +322,7 @@ class ApiServer:
                 self.send_header("Access-Control-Allow-Methods",
                                  "GET, POST, DELETE, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers",
-                                 "Authorization, Content-Type")
+                                 "Authorization, Content-Type, X-Web-Token")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
@@ -314,9 +347,19 @@ class ApiServer:
                     headers.setdefault("x-real-ip", self.client_address[0])
                 except (AttributeError, IndexError, TypeError):
                     pass
-                status, ctype, body, extra = web.handle(
-                    self.command, path, query, headers, raw)
-                self._send_raw(status, body, ctype, extra)
+                try:
+                    status, ctype, body, extra = web.handle(
+                        self.command, path, query, headers, raw)
+                except Exception as exc:  # noqa: BLE001 - see _crash_response
+                    status, ctype, body, extra = _crash_response(
+                        exc, path, web.agent.storage)
+                try:
+                    self._send_raw(status, body, ctype, extra)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    # The browser hung up mid-response (a closed tab, a
+                    # cancelled SSE stream). Nothing to answer, and an
+                    # unhandled exception here would kill the worker thread.
+                    pass
 
             # ------------------------------------------------------ methods
 

@@ -127,6 +127,12 @@ still returns the pipeline's own words — but the web app goes through
   no media generation and no feelings beyond a local mood model. Ask for any
   of those and it says so plainly, then tells you what it *can* do. When it
   does not understand you, it admits that instead of improvising.
+- **The right hello for the right person.** The engine writes its greetings
+  for the owner (*“Hello Boss”*), which is perfect on Telegram and on an
+  owner-scoped key and wrong when a stranger is using the public demo. The
+  web voice knows the difference from the scopes on the request: a visitor
+  gets a plain introduction that says what the agent is, what it is not, and
+  one thing to try. `/v1/chat` keeps the engine's own words untouched.
 
 ### The owner hears twice
 
@@ -154,6 +160,38 @@ The threaded server used to call `dispatch()` directly, which meant
 (`/dashboard`, `/stream/*`, `/webhook`). It now runs the **same `WebApp`**
 object as the Vercel handler, so serverless and self-hosted serve exactly
 the same product.
+
+### The owner gate behaves like a gate
+
+`/approve` mints API keys, so its shared secret is treated as one:
+
+- The token is accepted **only** as `?token=` or the `X-Web-Token` header —
+  never from a request body. A cross-site HTML form can post a body to your
+  server; it cannot set a custom header. Approve/deny/unban/VIP are therefore
+  not forgeable from a page a visitor happens to open.
+- Wrong tokens are counted **per visitor**: 10 failures inside 10 minutes
+  locks that visitor out for 5 minutes. The lockout answers `429` with a
+  `Retry-After`, browsers get a page that says what happened and reloads
+  itself when it expires, and every attempt is counted in the ledger
+  (`security/web_token_denied`, `security/web_token_lockout`) plus an
+  `intrusion` event. The owner gets **one** Telegram alert per lockout.
+- The gate runs **before** the body is parsed, so a locked-out visitor cannot
+  use the request as a probe of anything else.
+- `/dashboard` and `/stream/*` share the same guard, and `X-Web-Token` is in
+  the CORS allow-list so the inbox's own buttons work from another origin.
+
+### Nothing grows without bound, and a crash is still an answer
+
+- **Session history is trimmed.** The web chat persists every turn so a
+  reload keeps its memory, which on a public page means sessions forever.
+  `storage.session_prune()` keeps the newest 60 turns per session and caps
+  the table at 20 000 rows globally, and runs by itself every 128 inserts.
+- **The threaded server cannot lose a request.** The route dispatcher already
+  converted handler errors into a JSON `500` (`errors/http_500`); the web
+  layer around it — pages, SSE, dashboard — is guarded the same way, so a
+  crash comes back as the standard error envelope, is counted, is logged, and
+  the server keeps serving. A browser that hangs up mid-response no longer
+  takes a worker thread with it.
 
 ---
 
@@ -598,15 +636,21 @@ safety, SSE plan feeding), the **conversational voice** (honest scope for
 internet / external-AI / media / live-data asks, identity questions, real
 memory recall, `again` / `tell me more` / `and now?` follow-ups, pronoun
 resolution onto the last device, database-persisted turns that rehydrate
-into a fresh manager, session-id validation), the **developer portal**
-(live table parity with `/api.json`, scope pills, key-request form, limits
-and error docs, and the request reaching the owner by email), the **owner
-approval inbox** (web-token gate, browser token page, one-tap approve with
-the key shown once and never re-rendered or emailed, deny→ban→revoke,
-unban, VIP, bad input), the **SMTP notifier** (disabled no-op, STARTTLS
-delivery and login, failures that never raise, de-dup cooldown) against a
-fake `smtplib`, plus **threaded/serverless surface parity** and
-`Config.from_env()` honouring every `REALAI_*` variable.
+into a fresh manager, session-id validation, and history pruning both on
+demand and automatically), the **developer portal** (live table parity
+with `/api.json`, scope pills, key-request form, limits and error docs,
+and the request reaching the owner by email), the **owner
+approval inbox** (web-token gate — accepted from `?token=` or
+`X-Web-Token` and *never* from a body, per-visitor brute-force lockout with
+`429` + `Retry-After` + the browser lockout page + ledger counters +
+`intrusion` event + one Telegram alert, and the gate checked before the body
+is parsed — browser token page, one-tap approve with the key shown once and
+never re-rendered or emailed, deny→ban→revoke, unban, VIP, bad input),
+the **SMTP notifier** (disabled no-op, STARTTLS delivery and login,
+failures that never raise, de-dup cooldown) against a
+fake `smtplib`, plus **threaded/serverless surface parity** (a crash in the
+web layer comes back as the same counted JSON `500`, and the server keeps
+serving) and `Config.from_env()` honouring every `REALAI_*` variable.
 
 ## Configuration
 
@@ -627,7 +671,7 @@ Environment variables (all optional):
 | `REALAI_TELEGRAM_POLL` | `1` (off on Vercel) | run the Telegram master-control poller |
 | `REALAI_TELEGRAM_WEBHOOK_SECRET` | *(off)* | shared secret for `/webhook` (webhook mode) |
 | `REALAI_AUTONOMOUS_REPORT_MIN` | `60` | free-will report cadence (minutes) |
-| `REALAI_WEB_TOKEN` | *(off)* | shared secret for `/dashboard`, `/stream/*` **and the `/approve` owner inbox** |
+| `REALAI_WEB_TOKEN` | *(off)* | shared secret for `/dashboard`, `/stream/*` **and the `/approve` owner inbox** — `?token=` or `X-Web-Token` only; 10 wrong tries locks that visitor out for 5 min |
 | `REALAI_SSE_WINDOW` | `20` | max SSE window seconds (clamped to 1–25) |
 | `REALAI_BRAND_TAGLINE` | *(built-in)* | tagline under the wordmark on every page |
 | `REALAI_DEMO_RATE_PER_MIN` | `12` | keyless demo chat refill, **per visitor** |

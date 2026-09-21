@@ -207,6 +207,27 @@ class TestBrandedChatApp(unittest.TestCase):
             self.assertEqual(code, 401)
             code, _ = anon.req("GET", "/stream")
             self.assertEqual(code, 200)
+            # A crash in the web layer must come back as the same JSON 500
+            # the serverless handler gives (and be counted), not as a
+            # dropped connection from a dead worker thread.
+            real_handle = server.web.handle
+
+            def explode(*a, **kw):
+                raise RuntimeError("page renderer exploded")
+
+            server.web.handle = explode
+            try:
+                code, body = anon.req("GET", "/developers")
+            finally:
+                server.web.handle = real_handle
+            self.assertEqual(code, 500)
+            self.assertEqual(body["error"]["code"], "internal")
+            self.assertGreaterEqual(
+                self.agent.storage.get_counters()
+                .get("errors", {}).get("http_500", 0), 1)
+            # and the server keeps serving afterwards
+            code, _ = anon.req("GET", "/healthz")
+            self.assertEqual(code, 200)
         finally:
             server.shutdown()
             self.agent.stop()
@@ -361,6 +382,37 @@ class TestConversationalVoice(unittest.TestCase):
         self.assertIn(self.agent.mind.owner_name, out["response"])
         self.assertIn("standard library", out["response"])
 
+        # ...and it greets a stranger like a stranger, not like the owner
+        self._visitor_greeting_is_not_the_owner_greeting()
+
+    def _visitor_greeting_is_not_the_owner_greeting(self):
+        """Folded into the identity test above: the engine writes its hello
+        for the owner ("Hello Boss"), which is right on Telegram and on an
+        owner key and wrong on a public web page. The web voice adapts;
+        /v1/chat keeps the engine's own words."""
+        first = self.say("hello there", session_id="s-hi")
+        self.assertEqual(first["meta"]["intent"], "greet")
+        self.assertNotIn("Boss", first["response"])
+        self.assertIn(self.agent.mind.agent_name, first["response"])
+        self.assertIn("pure Python", first["response"])
+        self.assertIn("no external AI", first["response"])
+        self.assertIn("status", first["response"])
+
+        # a returning visitor is not re-introduced to everything
+        again = self.say("hi", session_id="s-hi")
+        self.assertIn("again", again["response"].lower())
+        self.assertNotIn("from scratch", again["response"])
+
+        # thanks does not call a stranger "boss" either
+        self.assertNotIn("boss", self.say("thanks", session_id="s-ta")[
+            "response"].lower())
+
+        # ...and the owner path is untouched
+        owner = self.agent.reply("hello there", session_id="s-owner",
+                                 sender="boss", scopes=["owner"])
+        self.assertEqual(owner["meta"]["intent"], "greet")
+        self.assertIn("Boss", owner["response"])
+
     # ---- memory recall: only ever quotes a real row
 
     def test_recalls_what_you_told_it(self):
@@ -444,6 +496,41 @@ class TestConversationalVoice(unittest.TestCase):
         out = fresh.reply("again", session_id=self.sid, sender="web")
         self.assertIn("once more", out["response"])
         self.assertIn(self.sid, fresh.sessions())
+
+        # History is trimmed, because a public page mints sessions forever and
+        # an unbounded session_turns table is how a small box fills its disk.
+        storage = self.agent.storage
+        for i in range(12):
+            storage.session_add_turn("s-flood", f"m{i}", f"r{i}")
+        storage.session_add_turn(self.sid, "keep me", "kept")
+        deleted = storage.session_prune(keep_per_session=3)
+        self.assertEqual(deleted, 10)
+        left = storage.session_turns("s-flood", 100)
+        self.assertEqual([r["message"] for r in left], ["m9", "m10", "m11"])
+        self.assertEqual(storage.session_count(self.sid), 3)
+        # ...and there is a global ceiling across every session
+        self.assertEqual(storage.session_prune(max_rows=2), 4)
+        self.assertEqual(len(storage.query(
+            "SELECT id FROM session_turns")), 2)
+        # pruning an empty table is a no-op that reports nothing deleted
+        storage.execute("DELETE FROM session_turns")
+        self.assertEqual(storage.session_prune(), 0)
+
+        # ...and it also runs by itself, so a public server left running for
+        # weeks cannot grow the table without bound
+        real_every = type(storage).SESSION_PRUNE_EVERY
+        real_keep = type(storage).SESSION_KEEP_PER_SESSION
+        type(storage).SESSION_PRUNE_EVERY = 4
+        type(storage).SESSION_KEEP_PER_SESSION = 2
+        try:
+            for i in range(8):
+                storage.session_add_turn("s-auto", f"a{i}", f"b{i}")
+        finally:
+            type(storage).SESSION_PRUNE_EVERY = real_every
+            type(storage).SESSION_KEEP_PER_SESSION = real_keep
+        self.assertEqual(storage.session_count("s-auto"), 2)
+        self.assertEqual([r["message"] for r in
+                          storage.session_turns("s-auto", 10)], ["a6", "a7"])
 
     def test_session_ids_are_validated_and_forgettable(self):
         out = self.say("hello", session_id="../../etc/passwd")
@@ -599,6 +686,71 @@ class TestOwnerApprovalInbox(unittest.TestCase):
         self.assertEqual(self.agent.storage.user_get("mira")["status"],
                          "PENDING")
 
+        # ...and wrong tokens are counted per visitor: after a handful of
+        # failures the gate locks the visitor out with a 429 instead of
+        # letting a browser script keep guessing the secret.
+        guard = self.app.token_guard
+        guard.max_failures = 3
+        guard.lockout_s = 60.0
+        alerts: list = []
+        real_send = self.agent.telegram.send
+        self.agent.telegram.send = lambda text, **kw: alerts.append(text)
+        try:
+            for _ in range(2):
+                status, _c, _b, _x = call(self.app, "GET", "/approve",
+                                          {"token": "wrong"}, {})
+                self.assertEqual(status, 401)
+            status, _c, body, _x = call(self.app, "GET", "/approve",
+                                        {"token": "wrong"}, {})
+        finally:
+            self.agent.telegram.send = real_send
+        self.assertEqual(status, 429)
+        self.assertEqual(jbody(body)["error"]["code"], "too_many_attempts")
+        # the owner hears about a brute-force attempt once, not per hit
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("locked out", alerts[0])
+        # the right token is refused too while the lockout stands
+        status, _c, _b, _x = call(self.app, "GET", "/approve",
+                                  {"token": "sekret-token"}, {})
+        self.assertEqual(status, 429)
+        # a browser reload of the inbox gets the human-readable 429 page
+        status, ctype, body, extra = call(
+            self.app, "GET", "/approve", {"token": "wrong"},
+            {"accept": "text/html"})
+        self.assertEqual(status, 429)
+        self.assertIn("text/html", ctype)
+        self.assertIn("Too many wrong web tokens", body.decode())
+        self.assertTrue(extra.get("Retry-After"))
+        # the attempt is on the ledger
+        counts = self.agent.storage.get_counters()
+        self.assertGreaterEqual(
+            counts.get("security", {}).get("web_token_denied", 0), 3)
+        self.assertGreaterEqual(
+            counts.get("security", {}).get("web_token_lockout", 0), 1)
+        self.assertTrue(self.agent.storage.query(
+            "SELECT id FROM events WHERE type='intrusion'"))
+        # /dashboard and /stream honour the same gate
+        status, _c, _b, _x = call(self.app, "GET", "/dashboard", {}, {})
+        self.assertEqual(status, 429)
+        status, _c, _b, _x = call(self.app, "GET", "/stream", {}, {})
+        self.assertEqual(status, 429)
+        # and a clean visitor with the right token is let through, which also
+        # clears their record
+        guard.succeed("local")
+        status, _c, _b, _x = call(self.app, "GET", "/dashboard",
+                                  {"token": "sekret-token"}, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(guard.blocked_for("local"), 0.0)
+        # the token is never accepted from a body: a cross-site form can post
+        # one, it cannot set a custom header
+        status, _c, body, _x = call(self.app, "POST", "/approve", {}, {},
+                                    json.dumps({"action": "approve",
+                                                "username": "mira",
+                                                "token": "sekret-token"
+                                                }).encode())
+        self.assertEqual(status, 401)
+
+
     def test_browser_gets_a_token_gate_page(self):
         status, ctype, body, _x = call(
             self.app, "GET", "/approve", {},
@@ -710,8 +862,14 @@ class TestOwnerApprovalInbox(unittest.TestCase):
         status, _c, _b, _x = call(self.app, "DELETE", "/approve", {}, self.good)
         self.assertEqual(status, 405)
 
+        # The gate is checked *before* the body is parsed, so a malformed
+        # body from an ungated visitor is still just 401.
         status, _c, body, _x = call(self.app, "POST", "/approve", {}, {},
                                     b"{oops")
+        self.assertEqual(status, 401)
+
+        status, _c, body, _x = call(self.app, "POST", "/approve", {},
+                                    self.good, b"{oops")
         self.assertEqual(status, 400)
         self.assertEqual(jbody(body)["error"]["code"], "bad_json")
 

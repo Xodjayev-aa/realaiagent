@@ -6,12 +6,20 @@ A fully local, owner-controlled cognitive AI agent.
 - Built-in learning: trainable intent model, Q-learning action policy,
   procedural skill memory, episodic/semantic memory.
 - Device control with a hard permission gate (allow / ask / deny).
-- API-only surface with its own API-key management (scoped, revocable).
+- Its own doors: a branded chat app at ``/``, a live developer portal at
+  ``/developers``, an owner approval inbox at ``/approve``, and a keyed
+  API (``/v1/*``, scoped, revocable) behind them all.
 - Everything is counted: a durable usage ledger for requests, thoughts,
   decisions, actions, permissions, learning updates, memory and errors.
 - 0.3.0: a live web layer (dashboard + 15 SSE streams), a Vercel
   serverless handler (free tier, /tmp storage, Telegram webhook mode)
   and the same-repo Telegram master control - all still pure stdlib.
+- 0.4.0: it became a product a stranger can use. A conversational voice
+  with multi-turn context and durable per-session memory, a keyless demo
+  chat with per-visitor rate limits, an owner approval inbox that mints
+  keys one tap at a time (web-token gated, brute-force locked, alerted on
+  Telegram), stdlib SMTP so requests reach the owner by email as well, and
+  a threaded server that serves exactly the serverless surface.
 
 Pure Python standard library. No external AI, no external APIs, no
 third-party packages. The agent is 100% the owner's code.
@@ -19,6 +27,6 @@ third-party packages. The agent is 100% the owner's code.
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = ["__version__"]
