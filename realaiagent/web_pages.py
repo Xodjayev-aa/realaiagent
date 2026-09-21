@@ -557,7 +557,7 @@ _CHAT_BODY = Template("""
    <textarea id="input" rows="1" autocomplete="off"
      placeholder="talk to it — no key needed · Enter sends, Shift+Enter newline"
      aria-label="message to $agent"></textarea>
-   <button class="act ghost" id="mic" type="button" title="speak (local whisper)"
+   <button class="act ghost" id="mic" type="button" title="speak"
      style="display:none" aria-label="record a voice message">🎤</button>
    <button class="act" id="send" type="submit">Send</button>
   </form>
@@ -715,7 +715,7 @@ function attach(body, atts){
 function speakBtn(body, text){
   if (!CAPS.speak) return;
   var b = document.createElement("button");
-  b.type = "button"; b.className = "tts"; b.title = "read aloud (local voice)";
+  b.type = "button"; b.className = "tts"; b.title = "read aloud";
   b.textContent = "🔊";
   b.onclick = function(){
     b.disabled = true; b.textContent = "…";
@@ -966,8 +966,8 @@ def chat_page(agent: Any, tagline: Optional[str] = None) -> str:
         tagline=esc(tagline or cfg.brand_tagline),
         rate=int(getattr(cfg, "demo_rate_per_min", 12)))
     return (_head(name, f"{name} — your own AI, live", "chat",
-                  f"Chat with {name}, a fully local cognitive AI. No key "
-                  f"needed, no external AI involved.")
+                  f"Chat with {name}: talk, draw images, build presentations. "
+                  f"No key, no signup.")
             + body + _footer(agent) + _NAV_JS
             + _CHAT_JS.replace("@@AGENT@@", esc(name)))
 

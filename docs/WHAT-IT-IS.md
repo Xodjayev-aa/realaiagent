@@ -1,6 +1,6 @@
 # RealAI Agent — what it is and how it is made
 
-*Version 0.5.0 · pure Python standard library · runs on Vercel + Turso, or on
+*Version 0.6.0 · pure Python standard library · runs on Vercel + Turso, or on
 any machine you own.*
 
 ---
@@ -33,9 +33,18 @@ The core was built first because of a hard rule: *no other AI inside it,
 no external keys*. It is narrow but honest — it says "I did not follow
 that" instead of guessing. The optional brain exists because you asked
 for ChatGPT/Gemini-style talking; their models cannot be copied, but open
-models can be run locally, so the agent has a switch for one. When the
-switch is off (as on Vercel), the agent explains what is missing and how
-the owner can enable it.
+models can be run locally, so the agent has a switch for one. Since 0.6.0
+there is a second position of that switch, `REALAI_PROVIDER=hosted`: the
+same abilities (fluent chat, images, presentations with an AI cover slide,
+speech in and out) come from a keyless public inference API
+(Pollinations' open endpoints) — free, no account, works on Vercel. End
+users never see the provider name; the README discloses it. With the
+switch fully off the agent explains what is missing and how the owner can
+enable it.
+
+Every generated file is also uploaded to the owner's Telegram bot chat
+(or a forum topic per kind — "folders"), which gives free, unlimited
+storage and a `file_id` for re-sending.
 
 ---
 
@@ -177,7 +186,7 @@ the function, sets a 30 s max duration and declares the cron.
 - Calculator uses the AST, never `eval`. Media names are pattern-matched.
 - Secrets never leave the database/data dir; the only outbound calls are
   the ones you configure (Turso, your Telegram bot, your SMTP, your
-  local models).
+  local models or the hosted provider).
 
 ---
 
@@ -187,9 +196,9 @@ the function, sets a 30 s max duration and declares the cron.
    forced hand-written pieces that are normally imported: a naive-Bayes
    classifier, an HTTP server, an SSE hub, a WSGI adapter, a multipart
    encoder, a libSQL driver, a PPTX writer.
-2. **Every claim testable offline.** The 253 tests use fake local servers
+2. **Every claim testable offline.** The 262 tests use fake local servers
    that implement the real wire protocols of Ollama, Stable Diffusion,
-   whisper.cpp, Piper and Turso's Hrana pipeline (the Turso fake is a real
+   whisper.cpp, Piper, the hosted provider, Telegram and Turso's Hrana pipeline (the Turso fake is a real
    SQLite behind HTTP), so the suite proves the integrations without any
    model or account.
 3. **Cold-start tests.** A test builds an agent, stores memory and an

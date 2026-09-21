@@ -334,12 +334,14 @@ class ConversationManager:
         if media is not None:
             return media
 
-        scope = self._out_of_scope(raw)
+        hosted = bool(getattr(getattr(self.agent, "generative", None),
+                              "hosted", False))
+        scope = None if hosted else self._out_of_scope(raw)
         if scope:
             self.agent.storage.count("chat", "honest_scope")
             return scope, "scope", 0.95, {}
 
-        about_self = self._self_question(raw)
+        about_self = None if hosted else self._self_question(raw)
         if about_self:
             self.agent.storage.count("chat", "identity_answer")
             return about_self, "identity", 0.9, {}
@@ -934,6 +936,19 @@ class ConversationManager:
         snap = self.agent.mind.snapshot()
         name = snap["agent"]
         mood = snap["mood"]["note"]
+        gen = getattr(self.agent, "generative", None)
+        if gen is not None and gen.can_talk:
+            if sess.turn_count == 0:
+                extras = ["chat about anything"]
+                if gen.can_draw:
+                    extras.append("draw images (\"draw me a …\")")
+                extras.append("build presentations (\"make a presentation about …\")")
+                if gen.can_speak:
+                    extras.append("read replies aloud")
+                return (f"Hi, I'm {name}. I can {', '.join(extras[:-1])} and "
+                        f"{extras[-1]}. I also remember what you tell me "
+                        f"(\"remember that …\"). What would you like to do?")
+            return f"Hello again — {name} here. What's next?"
         if sess.turn_count == 0:
             return (
                 f"Hi — I'm {name}. I'm a cognitive AI my owner wrote from "

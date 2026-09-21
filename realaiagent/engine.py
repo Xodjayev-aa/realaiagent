@@ -69,6 +69,8 @@ class Agent:
         from .generative import Generative
         self.generative = Generative(cfg, self.storage,
                                      self.mind.agent_name, self.mind.owner_name)
+        if self.telegram.enabled:
+            self.generative.archive = self._archive_file
         self.executor.on_q_update = self.learner.q_update
         self.executor.state_builder = self._q_state
         self._msg_lock = threading.Lock()
@@ -226,6 +228,32 @@ class Agent:
     def _parse(self, text: str) -> Dict[str, Any]:
         return parse_message(self.model, text, self._devices(),
                              self.learner.skill_names())
+
+    def _archive_file(self, name: str, data: bytes, mime: str,
+                      kind: str) -> Optional[str]:
+        """Send a generated file to the Telegram archive chat.
+
+        "Folders" = forum topics: REALAI_TG_ARCHIVE_TOPICS maps a kind
+        (image / slides / audio) to a message_thread_id. Without topics
+        the caption carries a #kind hashtag so Telegram search finds it.
+        """
+        cfg = self.cfg
+        topics: Dict[str, int] = {}
+        for part in (cfg.tg_archive_topics or "").split(","):
+            if ":" in part:
+                k, _, v = part.strip().partition(":")
+                if v.strip().isdigit():
+                    topics[k.strip()] = int(v.strip())
+        file_id = self.telegram.send_file(
+            name, data, mime, caption=f"#{kind} {name}",
+            chat_id=cfg.tg_archive_chat_id or None,
+            thread_id=topics.get(kind))
+        if file_id:
+            try:
+                self.storage.state_set(f"tg_file:{name}", file_id)
+            except Exception:  # noqa: BLE001
+                pass
+        return file_id
 
     def _q_state(self, req: "ActionRequest") -> str:
         return f"act|{req.category}"

@@ -60,6 +60,11 @@ class Config:
     # the bot is in webhook mode (set via setWebhook). Empty = open
     # webhook (fine locally, do not leave open in production).
     telegram_webhook_secret: str = ""
+    # Archive every generated file (images, decks, audio) to a Telegram chat.
+    # Defaults to the owner chat; a forum supergroup + topic ids gives
+    # "folders": REALAI_TG_ARCHIVE_TOPICS="image:12,slides:13,audio:14".
+    tg_archive_chat_id: str = ""
+    tg_archive_topics: str = ""
 
     # Optional shared secret guarding /dashboard, /stream/* and the owner's
     # /approve inbox (passed as ?token=... or the X-Web-Token header).
@@ -107,6 +112,23 @@ class Config:
     # at most once per this many seconds, piggybacking on a request or a
     # Vercel cron hitting GET /cron/tick.
     serverless_tick_seconds: float = 60.0
+
+    # --- generative provider ---------------------------------------------
+    # "local"  : only the local backends below (Ollama, SD, whisper, Piper)
+    # "hosted" : a keyless public inference API (Pollinations.AI, no signup,
+    #            no key) for talk / images / voice, so the agent has ChatGPT-
+    #            style abilities on Vercel with no hardware. Local backends
+    #            still win when their URL is set. Anonymous tier is
+    #            rate-limited (~1 request / 15 s per IP); an optional token
+    #            from auth.pollinations.ai raises it - never required.
+    provider: str = "local"
+    hosted_text_url: str = "https://text.pollinations.ai"
+    hosted_image_url: str = "https://image.pollinations.ai"
+    hosted_text_model: str = "openai"
+    hosted_image_model: str = "flux"
+    hosted_voice: str = "nova"
+    hosted_token: str = ""
+    hosted_timeout: float = 60.0
 
     # --- optional LOCAL generative backends (all off unless a URL is set) --
     # These are servers running on YOUR machine: Ollama for fluent talk,
@@ -186,6 +208,12 @@ class Config:
             autonomous_report_minutes=float(os.environ.get(
                 "REALAI_AUTONOMOUS_REPORT_MIN", "60")),
             agent_name=os.environ.get("REALAI_AGENT_NAME", "REAL"),
+            provider=os.environ.get("REALAI_PROVIDER", "local").strip().lower(),
+            hosted_text_model=os.environ.get("REALAI_HOSTED_TEXT_MODEL", "openai"),
+            hosted_image_model=os.environ.get("REALAI_HOSTED_IMAGE_MODEL", "flux"),
+            hosted_voice=os.environ.get("REALAI_HOSTED_VOICE", "nova"),
+            hosted_token=os.environ.get("REALAI_HOSTED_TOKEN", "").strip(),
+            hosted_timeout=float(os.environ.get("REALAI_HOSTED_TIMEOUT", "60")),
             llm_url=os.environ.get("REALAI_LLM_URL", "").strip(),
             llm_model=os.environ.get("REALAI_LLM_MODEL", "llama3.1:8b"),
             llm_timeout=float(os.environ.get("REALAI_LLM_TIMEOUT", "90")),
@@ -202,6 +230,8 @@ class Config:
                             or os.environ.get("TURSO_AUTH_TOKEN", "")).strip(),
             serverless_tick_seconds=float(os.environ.get(
                 "REALAI_SERVERLESS_TICK_SECONDS", "60")),
+            tg_archive_chat_id=os.environ.get("REALAI_TG_ARCHIVE_CHAT_ID", ""),
+            tg_archive_topics=os.environ.get("REALAI_TG_ARCHIVE_TOPICS", ""),
             telegram_webhook_secret=os.environ.get(
                 "REALAI_TELEGRAM_WEBHOOK_SECRET", ""),
             web_token=os.environ.get("REALAI_WEB_TOKEN", ""),

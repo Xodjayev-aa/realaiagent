@@ -522,7 +522,59 @@ Counters survive restarts (rebuilt from the ledger on boot).
    (/approve /deny /vip /topup …)       reports + security alerts
 ```
 
-## Talk, draw, speak, listen, present — locally (optional)
+## Talk, draw, speak, listen, present — hosted (free, keyless) or local
+
+### `REALAI_PROVIDER=hosted` — 0.6.0, works on Vercel, no key, no account
+
+Set **one** variable and the deployed product talks fluently, draws images,
+builds presentations with an AI cover slide and speaks/listens — on the
+Vercel free tier, with nothing to install and nothing to sign up for:
+
+```
+REALAI_PROVIDER=hosted
+```
+
+Honesty about what that is: the requests go to the public, keyless
+inference API of the [Pollinations](https://pollinations.ai) open-source
+project (OpenAI-compatible text at `text.pollinations.ai`, images at
+`image.pollinations.ai`, TTS/STT via its `openai-audio` model). It is
+called from the server with `private=true` (nothing appears in public
+feeds) and end users never see the provider — the UI, the persona and
+`/public/capabilities` only say `provider: hosted`. Anonymous use is
+rate-limited (roughly one request every 15 s per IP) and images may carry
+a small watermark; an optional `REALAI_HOSTED_TOKEN` (free, from
+auth.pollinations.ai) lifts both — **optional**, never required.
+The trainable core, the ledger, memory and owner controls are untouched:
+the hosted model is a tool the agent calls, not the agent.
+
+| variable | default | meaning |
+|---|---|---|
+| `REALAI_PROVIDER` | `local` | `hosted` turns every ability on without local engines |
+| `REALAI_HOSTED_TEXT_MODEL` | `openai` | chat / outline / STT model name |
+| `REALAI_HOSTED_IMAGE_MODEL` | `flux` | `flux`, `turbo`, `kontext` |
+| `REALAI_HOSTED_VOICE` | `nova` | alloy · echo · fable · onyx · nova · shimmer |
+| `REALAI_HOSTED_TOKEN` | *(none)* | optional; removes the anonymous rate limit / watermark |
+| `REALAI_HOSTED_TIMEOUT` | `60` | seconds |
+
+A local URL always wins over hosted: set `REALAI_LLM_URL` and talk goes
+to your Ollama while images stay hosted, etc.
+
+### Telegram as the archive ("folders")
+
+When the Telegram bot is configured, **every generated file** (image,
+`.pptx`, audio) is uploaded to Telegram right after it is created —
+Telegram stores it for free, without limits, and the returned `file_id` is
+kept in the database (`tg_file:<name>`) so it can be re-sent later without
+re-uploading. By default files land in the owner chat with a `#image` /
+`#slides` / `#audio` caption (searchable). For real folders make a forum
+supergroup, add the bot, create one topic per kind and set:
+
+```
+REALAI_TG_ARCHIVE_CHAT_ID=-1001234567890
+REALAI_TG_ARCHIVE_TOPICS=image:12,slides:13,audio:14
+```
+
+### Local engines (optional, a machine you own)
 
 The trainable core stays exactly as it is. On top of it, `realaiagent/generative.py`
 adds the *ChatGPT / Gemini-style* abilities, each wired to an **open model
@@ -652,9 +704,10 @@ and memory consolidates even with no visitors.
 per month — the whole agent uses a few dozen rows per request. Vercel
 Hobby: 100 GB-h of functions, 30 s max duration (set in `vercel.json`).
 The local generative backends (Ollama, Stable Diffusion, whisper, Piper)
-are **not** available on Vercel — there is no GPU and no localhost; the
-agent stays honest about that unless you point `REALAI_LLM_URL` etc. at a
-server you own that is reachable from the internet. Presentations work
+are **not** available on Vercel — there is no GPU and no localhost; set
+`REALAI_PROVIDER=hosted` (free, keyless — see above) or point
+`REALAI_LLM_URL` etc. at a server you own that is reachable from the
+internet. Presentations work
 everywhere: the `.pptx` writer is pure Python and the file is stored in
 the database.
 
@@ -836,6 +889,10 @@ Environment variables (all optional):
 | `REALAI_DATABASE_TOKEN` (or `TURSO_AUTH_TOKEN`) | *(none)* | Turso auth token |
 | `REALAI_SERVERLESS_TICK_SECONDS` | `60` | min. seconds between autonomous thoughts on serverless |
 | `CRON_SECRET` | *(none)* | accepted as `Authorization: Bearer` on `/cron/tick` (Vercel Cron sets it) |
+| `REALAI_PROVIDER` | `local` | `hosted` = keyless public inference for talk/images/voice (see above) |
+| `REALAI_HOSTED_TEXT_MODEL` / `REALAI_HOSTED_IMAGE_MODEL` / `REALAI_HOSTED_VOICE` | `openai` / `flux` / `nova` | hosted model choices |
+| `REALAI_HOSTED_TOKEN` | *(none)* | optional; lifts the anonymous rate limit |
+| `REALAI_TG_ARCHIVE_CHAT_ID` / `REALAI_TG_ARCHIVE_TOPICS` | owner chat / *(none)* | where generated files are archived on Telegram |
 | `REALAI_LLM_URL` / `REALAI_LLM_MODEL` | *(none)* / `llama3.1:8b` | local Ollama for fluent talk |
 | `REALAI_IMAGE_URL` | *(none)* | Stable Diffusion WebUI (`--api`) for images |
 | `REALAI_STT_URL` / `REALAI_TTS_URL` / `REALAI_TTS_COMMAND` | *(none)* | whisper.cpp / Piper for voice |

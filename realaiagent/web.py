@@ -779,7 +779,7 @@ _DASHBOARD_HTML = Template("""<!doctype html>
  footer { color:#5c6577; font-size:12px; margin-top:12px; }
 </style></head><body><main>
  <h1>🤖 $agent — RealAI · live</h1>
- <div class="sub">fully local, owner-controlled · no external AI ·
+ <div class="sub">owner-controlled · everything counted ·
   pure Python stdlib · Vercel free tier (SSE windows auto-reconnect)</div>
  <div class="bar">
    <span class="stat" id="stat">starting…</span>

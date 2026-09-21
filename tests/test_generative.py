@@ -55,7 +55,7 @@ class FakeBackends(BaseHTTPRequestHandler):
         if self.path == "/api/chat":
             payload = json.loads(raw)
             last = payload["messages"][-1]["content"]
-            if "outline" in last:
+            if "presentation about" in last:
                 content = json.dumps([
                     {"title": "Solar power", "bullets": ["a subtitle"]},
                     {"title": "Why", "bullets": ["sun", "cheap"]},
@@ -79,6 +79,30 @@ class FakeBackends(BaseHTTPRequestHandler):
             return self._send(200, {"text": " hello agent " if ok else ""})
         if self.path == "/tts":
             return self._send(200, _wav(), "audio/wav")
+        # ---- hosted provider (OpenAI-compatible text API + image CDN) ----
+        if self.path == "/openai":
+            payload = json.loads(raw)
+            msgs = payload["messages"]
+            content = msgs[-1]["content"]
+            if payload.get("model") == "openai-audio":
+                return self._send(200, {"choices": [{"message": {
+                    "content": "hello from hosted whisper"}}]})
+            if isinstance(content, str) and "presentation about" in content:
+                text = json.dumps([{"title": "Hosted deck", "bullets": ["sub"]},
+                                   {"title": "Point", "bullets": ["a", "b"]},
+                                   {"title": "Key takeaways", "bullets": ["c"]}])
+            else:
+                text = f"hosted:{content} sys={msgs[0]['content'][:9]}"
+            return self._send(200, {"model": "openai-large", "choices": [
+                {"message": {"role": "assistant", "content": text}}]})
+        self._send(404, {"error": "no"})
+
+    def do_GET(self):
+        FakeBackends.seen.append((self.path, "", b""))
+        if self.path.startswith("/prompt/"):
+            return self._send(200, PNG, "image/png")
+        if "model=openai-audio" in self.path:
+            return self._send(200, b"ID3\x04\x00" + b"\x00" * 200, "audio/mpeg")
         self._send(404, {"error": "no"})
 
 
@@ -182,7 +206,7 @@ class GenerativeTests(unittest.TestCase):
         g = self._on()
         r = g.presentation("solar power")
         self.assertTrue(r.ok, r.error)
-        self.assertEqual(r.meta, {"slides": 3, "outline": "llm"})
+        self.assertEqual(r.meta, {"slides": 3, "outline": "llm", "cover_image": True})
         self.assertIn("Solar power", r.text)
 
     def test_presentation_template_without_llm(self):
@@ -208,6 +232,79 @@ class GenerativeTests(unittest.TestCase):
         os.utime(old, (time.time() - 7200, time.time() - 7200))
         self.assertEqual(g.prune(), 1)
         self.assertFalse(old.exists())
+
+
+class HostedProviderTests(unittest.TestCase):
+    """REALAI_PROVIDER=hosted: keyless public inference, no local backends."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeBackends)
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+
+    def _gen(self, **kw) -> Generative:
+        cfg = Config(data_dir=Path(tempfile.mkdtemp(prefix="realai-hosted-")),
+                     tick_seconds=3600, provider="hosted",
+                     hosted_text_url=self.base, hosted_image_url=self.base, **kw)
+        return Generative(cfg, agent_name="NOVA", owner_name="Ali")
+
+    def test_capabilities_all_on(self):
+        caps = self._gen().capabilities()
+        self.assertEqual(caps["provider"], "hosted")
+        for k in ("talk", "images", "listen", "speak", "slides"):
+            self.assertTrue(caps[k]["enabled"], k)
+        self.assertEqual(caps["talk"]["engine"], "hosted")
+
+    def test_talk(self):
+        r = self._gen().chat([{"role": "user", "content": "hey"}])
+        self.assertTrue(r.ok, r.error)
+        self.assertTrue(r.text.startswith("hosted:hey"))
+        self.assertIn("You are N", r.text)              # persona sent
+        self.assertEqual(r.meta["engine"], "hosted")
+
+    def test_image_speak_listen(self):
+        g = self._gen()
+        r = g.image("a fox")
+        self.assertTrue(r.ok, r.error)
+        self.assertEqual(r.mime, "image/png")
+        self.assertIsNotNone(g.fetch_media(r.path.name))
+        r = g.speak("hello")
+        self.assertTrue(r.ok, r.error)
+        self.assertEqual(r.mime, "audio/mpeg")
+        self.assertTrue(r.path.read_bytes().startswith(b"ID3"))
+        r = g.transcribe(b"RIFFxxxx", filename="a.webm")
+        self.assertTrue(r.ok, r.error)
+        self.assertEqual(r.text, "hello from hosted whisper")
+
+    def test_presentation_with_cover_image(self):
+        r = self._gen().presentation("hosted deck")
+        self.assertTrue(r.ok, r.error)
+        self.assertEqual(r.meta, {"slides": 3, "outline": "llm", "cover_image": True})
+        with zipfile.ZipFile(r.path) as z:
+            self.assertIn("ppt/media/cover.png", z.namelist())
+            self.assertIn("r:embed", z.read("ppt/slides/slide1.xml").decode())
+            self.assertIn("image", z.read("ppt/slides/_rels/slide1.xml.rels").decode())
+            self.assertIsNone(z.testzip())
+
+    def test_local_url_beats_hosted(self):
+        g = self._gen(llm_url=self.base)       # local Ollama configured too
+        self.assertEqual(g.capabilities()["talk"]["engine"], "ollama")
+        r = g.chat([{"role": "user", "content": "x"}])
+        self.assertTrue(r.text.startswith("echo:"))
+
+    def test_hosted_down_is_clean(self):
+        cfg = Config(data_dir=Path(tempfile.mkdtemp()), tick_seconds=3600,
+                     provider="hosted", hosted_text_url="http://127.0.0.1:9",
+                     hosted_image_url="http://127.0.0.1:9", hosted_timeout=2,
+                     image_timeout=2)
+        g = Generative(cfg)
+        self.assertFalse(g.chat([{"role": "user", "content": "x"}]).ok)
+        self.assertFalse(g.image("x").ok)
 
 
 class ChatIntegrationTests(unittest.TestCase):
@@ -292,3 +389,75 @@ class ChatIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchiveHookTests(unittest.TestCase):
+    """Every generated file is handed to the archive callable (Telegram)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeBackends)
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+
+    def test_image_and_deck_are_archived(self):
+        cfg = Config(data_dir=Path(tempfile.mkdtemp(prefix="realai-arch-")),
+                     tick_seconds=3600, provider="hosted",
+                     hosted_text_url=self.base, hosted_image_url=self.base)
+        gen = Generative(cfg, agent_name="NOVA", owner_name="Ali")
+        seen = []
+        gen.archive = lambda name, data, mime, kind: seen.append(
+            (name, len(data) > 0, mime, kind)) or "file-1"
+        self.assertTrue(gen.image("a cat").ok)
+        self.assertTrue(gen.presentation("tea", with_image=False).ok)
+        kinds = [s[3] for s in seen]
+        self.assertIn("image", kinds)
+        self.assertIn("slides", kinds)
+        self.assertTrue(all(s[1] for s in seen))
+
+    def test_archive_failure_never_breaks_generation(self):
+        cfg = Config(data_dir=Path(tempfile.mkdtemp(prefix="realai-arch-")),
+                     tick_seconds=3600, provider="hosted",
+                     hosted_text_url=self.base, hosted_image_url=self.base)
+        gen = Generative(cfg, agent_name="NOVA", owner_name="Ali")
+
+        def boom(*a):
+            raise RuntimeError("telegram down")
+        gen.archive = boom
+        self.assertTrue(gen.image("a dog").ok)
+
+
+class TelegramSendFileTests(unittest.TestCase):
+    def test_multipart_upload_returns_file_id(self):
+        import json as _json
+        from realaiagent import telegram as tg_mod
+        from realaiagent.storage import Storage
+
+        class Fake(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                ok = (b'name="document"; filename="x.png"' in body
+                      and b"#image x.png" in body
+                      and b'name="message_thread_id"\r\n\r\n12' in body
+                      and self.path.endswith("/sendDocument"))
+                out = _json.dumps({"ok": ok, "result": {
+                    "document": {"file_id": "FID" if ok else ""}}}).encode()
+                self.send_response(200); self.end_headers(); self.wfile.write(out)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        old = tg_mod._API
+        tg_mod._API = f"http://127.0.0.1:{httpd.server_address[1]}/bot{{token}}/{{method}}"
+        try:
+            st = Storage(Path(tempfile.mkdtemp(prefix="realai-tg-")) / "db.sqlite")
+            tg = tg_mod.Telegram("t", "1", st)
+            fid = tg.send_file("x.png", b"\x89PNG", "image/png",
+                               caption="#image x.png", thread_id=12)
+            self.assertEqual(fid, "FID")
+        finally:
+            tg_mod._API = old
+            httpd.shutdown()

@@ -43,8 +43,10 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Callable, Any, Dict, Iterable, List, Optional
 from xml.sax.saxutils import escape as _xml
+
+from urllib.parse import quote as _q
 
 from .config import Config
 
@@ -110,12 +112,16 @@ class Generative:
 
     #: persona used when the local LLM answers free conversation
     PERSONA = (
-        "You are {name}, a fully local AI assistant owned by {owner}. You run "
-        "entirely on the owner's machine: no cloud, no external API, no keys. "
-        "Be warm, direct and genuinely helpful, like a good conversational "
-        "assistant. Use markdown when it helps (lists, code blocks). If asked "
-        "to do something you cannot do, say so plainly. Keep answers "
-        "focused; do not pad."
+        "You are {name}, a personal AI assistant owned and run by {owner}. "
+        "Be warm, direct and genuinely helpful, like a great conversational "
+        "assistant: answer the actual question, think step by step when it "
+        "matters, and write like a thoughtful person, not a manual. Use "
+        "markdown when it helps (lists, headings, code blocks). You can also "
+        "create images, build presentations and speak - if the user asks for "
+        "one of those, tell them to say e.g. 'draw me ...' or 'make a "
+        "presentation about ...'. Never mention which company or model "
+        "powers you; you are simply {name}. If asked to do something you "
+        "cannot do, say so plainly. Keep answers focused; do not pad."
     )
 
     def __init__(self, cfg: Config, storage: Any = None,
@@ -128,30 +134,127 @@ class Generative:
 
     # ----------------------------------------------------------- status
     @property
+    def hosted(self) -> bool:
+        return self.cfg.provider == "hosted"
+
+    @property
     def can_talk(self) -> bool:
-        return bool(self.cfg.llm_url)
+        return bool(self.cfg.llm_url) or self.hosted
 
     @property
     def can_draw(self) -> bool:
-        return bool(self.cfg.image_url)
+        return bool(self.cfg.image_url) or self.hosted
 
     @property
     def can_listen(self) -> bool:
-        return bool(self.cfg.stt_url)
+        return bool(self.cfg.stt_url) or self.hosted
 
     @property
     def can_speak(self) -> bool:
-        return bool(self.cfg.tts_url or self.cfg.tts_command)
+        return bool(self.cfg.tts_url or self.cfg.tts_command) or self.hosted
+
+    def _engine(self, local_flag: bool, local_name: str) -> str:
+        return local_name if local_flag else ("hosted" if self.hosted else "off")
 
     def capabilities(self) -> Dict[str, Any]:
+        c = self.cfg
         return {
-            "talk": {"enabled": self.can_talk, "engine": "ollama",
-                     "model": self.cfg.llm_model if self.can_talk else None},
-            "images": {"enabled": self.can_draw, "engine": "stable-diffusion-webui"},
-            "listen": {"enabled": self.can_listen, "engine": "whisper.cpp"},
-            "speak": {"enabled": self.can_speak, "engine": "piper"},
+            "provider": c.provider,
+            "talk": {"enabled": self.can_talk,
+                     "engine": self._engine(bool(c.llm_url), "ollama"),
+                     "model": (c.llm_model if c.llm_url else
+                               c.hosted_text_model if self.hosted else None)},
+            "images": {"enabled": self.can_draw,
+                       "engine": self._engine(bool(c.image_url), "stable-diffusion-webui")},
+            "listen": {"enabled": self.can_listen,
+                       "engine": self._engine(bool(c.stt_url), "whisper.cpp")},
+            "speak": {"enabled": self.can_speak,
+                      "engine": self._engine(bool(c.tts_url or c.tts_command), "piper")},
             "slides": {"enabled": True, "engine": "built-in pptx writer"},
         }
+
+    # ----------------------------------------------------- hosted client
+    def _hosted_headers(self) -> Dict[str, str]:
+        h = {"Content-Type": "application/json",
+             "User-Agent": f"RealAI/{self.agent_name}"}
+        if self.cfg.hosted_token:
+            h["Authorization"] = f"Bearer {self.cfg.hosted_token}"
+        return h
+
+    def _hosted_chat(self, messages: Messages, system: str,
+                     temperature: float) -> Dict[str, Any]:
+        """OpenAI-compatible chat completion on the hosted text API."""
+        payload = {
+            "model": self.cfg.hosted_text_model,
+            "messages": [{"role": "system", "content": system}] + messages,
+            "temperature": temperature,
+            "stream": False,
+            "private": True,
+        }
+        req = urllib.request.Request(
+            f"{self.cfg.hosted_text_url.rstrip('/')}/openai",
+            data=json.dumps(payload).encode(), headers=self._hosted_headers(),
+            method="POST")
+        with urllib.request.urlopen(req, timeout=self.cfg.hosted_timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {"text": raw.strip(), "model": self.cfg.hosted_text_model}
+        choices = data.get("choices") or []
+        text = ""
+        if choices:
+            text = str(((choices[0].get("message") or {}).get("content")) or "")
+        return {"text": text.strip(), "model": data.get("model", self.cfg.hosted_text_model)}
+
+    def _hosted_image(self, prompt: str, width: int, height: int) -> bytes:
+        params = (f"?width={width}&height={height}&model={_q(self.cfg.hosted_image_model)}"
+                  f"&nologo=true&private=true&safe=true&seed={int(time.time()) % 100000}")
+        req = urllib.request.Request(
+            f"{self.cfg.hosted_image_url.rstrip('/')}/prompt/{_q(prompt[:800])}{params}",
+            headers={"User-Agent": f"RealAI/{self.agent_name}",
+                     **({"Authorization": f"Bearer {self.cfg.hosted_token}"}
+                        if self.cfg.hosted_token else {})})
+        with urllib.request.urlopen(req, timeout=self.cfg.image_timeout) as resp:
+            ctype = resp.headers.get("Content-Type", "")
+            data = resp.read()
+        if not ctype.startswith("image/") and not data[:4] in (b"\x89PNG", b"\xff\xd8\xff\xe0",
+                                                              b"\xff\xd8\xff\xe1", b"RIFF"):
+            if data[:3] != b"\xff\xd8\xff":
+                raise ValueError("image service did not return an image")
+        return data
+
+    def _hosted_speak(self, text: str) -> bytes:
+        url = (f"{self.cfg.hosted_text_url.rstrip('/')}/{_q(text[:900])}"
+               f"?model=openai-audio&voice={_q(self.cfg.hosted_voice)}&private=true")
+        req = urllib.request.Request(url, headers={"User-Agent": f"RealAI/{self.agent_name}",
+                                                   **({"Authorization": f"Bearer {self.cfg.hosted_token}"}
+                                                      if self.cfg.hosted_token else {})})
+        with urllib.request.urlopen(req, timeout=self.cfg.hosted_timeout) as resp:
+            data = resp.read()
+        if not (data[:3] == b"ID3" or data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
+            raise ValueError("voice service did not return audio")
+        return data
+
+    def _hosted_transcribe(self, audio: bytes, fmt: str) -> str:
+        payload = {
+            "model": "openai-audio",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Transcribe this audio exactly. Reply with the transcript only."},
+                {"type": "input_audio", "input_audio": {
+                    "data": base64.b64encode(audio).decode(), "format": fmt}},
+            ]}],
+            "private": True,
+        }
+        req = urllib.request.Request(
+            f"{self.cfg.hosted_text_url.rstrip('/')}/openai",
+            data=json.dumps(payload).encode(), headers=self._hosted_headers(),
+            method="POST")
+        with urllib.request.urlopen(req, timeout=self.cfg.hosted_timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        choices = data.get("choices") or []
+        return str(((choices[0].get("message") or {}).get("content")) or "").strip() \
+            if choices else ""
 
     def _count(self, event: str, **detail: Any) -> None:
         if self.storage is not None:
@@ -184,8 +287,9 @@ class Generative:
                 pass
         return n
 
-    _NAME_RE = re.compile(r"[0-9]+-[0-9a-f]{10}\.(png|jpg|wav|pptx|md)")
+    _NAME_RE = re.compile(r"[0-9]+-[0-9a-f]{10}\.(png|jpg|wav|mp3|pptx|md)")
     _MIMES = {"png": "image/png", "jpg": "image/jpeg", "wav": "audio/wav",
+              "mp3": "audio/mpeg",
               "md": "text/markdown; charset=utf-8",
               "pptx": "application/vnd.openxmlformats-officedocument."
                       "presentationml.presentation"}
@@ -210,17 +314,35 @@ class Generative:
                 return None
         return None
 
+    # Set by the engine: callable(name, data, mime, kind) -> file_id | None.
+    # Every generated file is handed to it (Telegram archive) right after
+    # it is written, so the owner keeps a permanent copy for free.
+    archive: Optional[Callable[[str, bytes, str, str], Optional[str]]] = None
+    _KINDS = {"png": "image", "jpg": "image", "jpeg": "image",
+              "pptx": "slides", "wav": "audio", "mp3": "audio"}
+
     def _persist(self, path: Path) -> None:
-        """Mirror a generated file into the database when storage is remote,
-        and prune old rows, so /media works across serverless instances."""
+        """Mirror a generated file into the database when storage is remote
+        (so /media works across serverless instances) and into the
+        Telegram archive when one is configured."""
         st = self.storage
-        if st is None or not getattr(st, "remote", False):
-            return
-        try:
-            st.media_put(path.name, self._MIMES[path.suffix[1:]], path.read_bytes())
-            st.media_prune(self.cfg.media_ttl_hours * 3600)
-        except Exception:  # noqa: BLE001
-            pass
+        mime = self._MIMES[path.suffix[1:]]
+        data = None
+        if st is not None and getattr(st, "remote", False):
+            try:
+                data = path.read_bytes()
+                st.media_put(path.name, mime, data)
+                st.media_prune(self.cfg.media_ttl_hours * 3600)
+            except Exception:  # noqa: BLE001
+                pass
+        if self.archive is not None:
+            try:
+                if data is None:
+                    data = path.read_bytes()
+                kind = self._KINDS.get(path.suffix[1:], "file")
+                self.archive(path.name, data, mime, kind)
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------- talk
     def chat(self, messages: Messages, system: Optional[str] = None,
@@ -228,10 +350,23 @@ class Generative:
         """One turn of fluent conversation via the local LLM."""
         t0 = time.time()
         if not self.can_talk:
-            return GenResult(False, error="no local language model configured "
-                                          "(set REALAI_LLM_URL to your Ollama)")
+            return GenResult(False, error="no language model configured "
+                                          "(set REALAI_LLM_URL to your Ollama, "
+                                          "or REALAI_PROVIDER=hosted)")
         sys_prompt = system or self.PERSONA.format(
             name=self.agent_name, owner=self.owner_name)
+        if not self.cfg.llm_url:                       # hosted
+            try:
+                out = self._hosted_chat(messages, sys_prompt, temperature)
+                if not out["text"]:
+                    raise ValueError("empty reply")
+            except Exception as exc:  # noqa: BLE001
+                self._count("talk_error", engine="hosted")
+                return GenResult(False, error=_explain(exc, "the language model"),
+                                 ms=(time.time() - t0) * 1000)
+            self._count("talk", engine="hosted", model=out["model"])
+            return GenResult(True, text=out["text"], ms=(time.time() - t0) * 1000,
+                             meta={"model": out["model"], "engine": "hosted"})
         payload = {
             "model": self.cfg.llm_model,
             "messages": [{"role": "system", "content": sys_prompt}] + messages,
@@ -254,7 +389,9 @@ class Generative:
     def stream_chat(self, messages: Messages,
                     system: Optional[str] = None) -> Iterable[str]:
         """Token stream (NDJSON from Ollama). Yields text deltas."""
-        if not self.can_talk:
+        if not self.cfg.llm_url:
+            r = self.chat(messages, system)
+            yield r.text if r.ok else f"[{r.error}]"
             return
         sys_prompt = system or self.PERSONA.format(
             name=self.agent_name, owner=self.owner_name)
@@ -292,10 +429,26 @@ class Generative:
         if not prompt:
             return GenResult(False, error="empty image prompt")
         if not self.can_draw:
-            return GenResult(False, error="no local image model configured "
+            return GenResult(False, error="no image model configured "
                                           "(set REALAI_IMAGE_URL to your "
-                                          "Stable Diffusion WebUI, started "
-                                          "with --api)")
+                                          "Stable Diffusion WebUI, or "
+                                          "REALAI_PROVIDER=hosted)")
+        if not self.cfg.image_url:                     # hosted
+            w = max(256, min(1536, int(width))); h = max(256, min(1536, int(height)))
+            try:
+                raw = self._hosted_image(prompt, w, h)
+            except Exception as exc:  # noqa: BLE001
+                self._count("image_error", engine="hosted")
+                return GenResult(False, error=_explain(exc, "the image model"),
+                                 ms=(time.time() - t0) * 1000)
+            ext = "png" if raw[:4] == b"\x89PNG" else "jpg"
+            path = self._new_file(ext)
+            path.write_bytes(raw)
+            self._persist(path)
+            self._count("image", engine="hosted", bytes=len(raw))
+            return GenResult(True, text=prompt, path=path, url=self._url_for(path),
+                             mime=self._MIMES[ext], ms=(time.time() - t0) * 1000,
+                             meta={"width": w, "height": h, "engine": "hosted"})
         payload = {
             "prompt": prompt[:1500],
             "negative_prompt": negative or "blurry, low quality, watermark, text",
@@ -333,8 +486,21 @@ class Generative:
         if not audio:
             return GenResult(False, error="empty audio")
         if not self.can_listen:
-            return GenResult(False, error="no local speech recogniser configured "
-                                          "(set REALAI_STT_URL to whisper-server)")
+            return GenResult(False, error="no speech recogniser configured "
+                                          "(set REALAI_STT_URL to whisper-server, "
+                                          "or REALAI_PROVIDER=hosted)")
+        if not self.cfg.stt_url:                       # hosted
+            fmt = filename.rsplit(".", 1)[-1].lower() if "." in filename else "wav"
+            if fmt not in ("wav", "mp3", "webm", "ogg", "m4a", "flac"):
+                fmt = "wav"
+            try:
+                text = self._hosted_transcribe(audio, fmt)
+            except Exception as exc:  # noqa: BLE001
+                self._count("listen_error", engine="hosted")
+                return GenResult(False, error=_explain(exc, "the speech recogniser"),
+                                 ms=(time.time() - t0) * 1000)
+            self._count("listen", engine="hosted", bytes=len(audio))
+            return GenResult(True, text=text, ms=(time.time() - t0) * 1000)
         try:
             raw = _post_multipart(
                 f"{self.cfg.stt_url.rstrip('/')}/inference",
@@ -357,10 +523,23 @@ class Generative:
         if not text:
             return GenResult(False, error="nothing to say")
         if not self.can_speak:
-            return GenResult(False, error="no local voice configured (set "
-                                          "REALAI_TTS_URL or REALAI_TTS_COMMAND "
-                                          "for Piper)")
+            return GenResult(False, error="no voice configured (set REALAI_TTS_URL "
+                                          "or REALAI_TTS_COMMAND for Piper, or "
+                                          "REALAI_PROVIDER=hosted)")
         text = text[:2000]
+        if not (self.cfg.tts_url or self.cfg.tts_command):   # hosted → MP3
+            try:
+                mp3 = self._hosted_speak(text)
+            except Exception as exc:  # noqa: BLE001
+                self._count("speak_error", engine="hosted")
+                return GenResult(False, error=_explain(exc, "the voice"),
+                                 ms=(time.time() - t0) * 1000)
+            path = self._new_file("mp3")
+            path.write_bytes(mp3)
+            self._persist(path)
+            self._count("speak", engine="hosted", chars=len(text))
+            return GenResult(True, text=text, path=path, url=self._url_for(path),
+                             mime="audio/mpeg", ms=(time.time() - t0) * 1000)
         try:
             if self.cfg.tts_url:
                 req = urllib.request.Request(
@@ -390,7 +569,7 @@ class Generative:
 
     # ----------------------------------------------------------- slides
     def presentation(self, topic: str, slides: Optional[List[Dict[str, Any]]] = None,
-                     count: int = 6) -> GenResult:
+                     count: int = 6, with_image: bool = True) -> GenResult:
         """Build a real ``.pptx``.
 
         With a local LLM the outline is written by the model; without one
@@ -407,10 +586,18 @@ class Generative:
         slides = _clean_slides(slides)
         if not slides:
             return GenResult(False, error="could not produce an outline")
+        cover: Optional[bytes] = None
+        if self.can_draw and with_image:
+            img = self.image(f"{topic or slides[0]['title']}, striking editorial "
+                             f"illustration for a presentation cover, clean "
+                             f"composition, no text, no letters", width=1024,
+                             height=576)
+            if img.ok and img.path is not None:
+                cover = img.path.read_bytes()
         path = self._new_file("pptx")
         try:
             write_pptx(path, topic or slides[0]["title"], slides,
-                       author=self.agent_name)
+                       author=self.agent_name, cover_image=cover)
             self._persist(path)
         except Exception as exc:  # noqa: BLE001
             self._count("slides_error")
@@ -421,16 +608,20 @@ class Generative:
                          mime=("application/vnd.openxmlformats-officedocument."
                                "presentationml.presentation"),
                          ms=(time.time() - t0) * 1000,
-                         meta={"slides": len(slides), "outline": source})
+                         meta={"slides": len(slides), "outline": source,
+                               "cover_image": cover is not None})
 
     def _outline(self, topic: str, count: int):
         count = max(3, min(15, int(count)))
         if self.can_talk:
-            ask = (f"Write a {count}-slide presentation outline about: {topic}.\n"
-                   "Return ONLY JSON: a list of objects with keys \"title\" "
-                   "(string) and \"bullets\" (3-5 short strings). The first "
-                   "slide is the title slide (bullets = a one-line subtitle); "
-                   "the last slide is a summary.")
+            ask = (f"Write a {count}-slide presentation about: {topic}.\n"
+                   "Return ONLY a JSON list of objects with keys \"title\" (short, "
+                   "specific - no generic words like 'Introduction') and \"bullets\" "
+                   "(3-5 concrete, information-dense sentences of at most 18 words, "
+                   "with real facts, numbers or examples where possible). Slide 1 "
+                   "is the title slide: title = a compelling deck title, bullets = "
+                   "one subtitle line. The last slide is 'Key takeaways'. Write "
+                   "in the language of the topic. No markdown, JSON only.")
             res = self.chat([{"role": "user", "content": ask}],
                             system="You output strict JSON and nothing else.",
                             temperature=0.4)
@@ -594,9 +785,17 @@ def _accent_bar(sp_id: int, y: int) -> str:
 
 
 def _slide_xml(index: int, total: int, title: str, bullets: List[str],
-               is_title: bool, author: str) -> str:
+               is_title: bool, author: str, with_image: bool = False) -> str:
     shapes = []
-    if is_title:
+    if is_title and with_image:
+        # image on the right half, title on the left
+        shapes.append(_PIC.format(x=6400800, y=914400, cx=5029200, cy=5029200))
+        shapes.append(_textbox(2, "Title", 838200, 1828800, 5300000, 2400000,
+                               [title], 4000, bold=True))
+        shapes.append(_accent_bar(3, 4300000))
+        shapes.append(_textbox(4, "Subtitle", 838200, 4450000, 5300000, 1200000,
+                               bullets[:1] or [author], 1800, color="9AA6BC"))
+    elif is_title:
         shapes.append(_textbox(2, "Title", 838200, 2286000, 10515600, 1600000,
                                [title], 4400, bold=True))
         shapes.append(_accent_bar(3, 3960000))
@@ -623,10 +822,24 @@ def _slide_xml(index: int, total: int, title: str, bullets: List[str],
         '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>')
 
 
+_PIC = ('<p:pic><p:nvPicPr><p:cNvPr id="9" name="Cover"/><p:cNvPicPr>'
+        '<a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>'
+        '<p:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch>'
+        '</p:blipFill><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/>'
+        '</a:xfrm><a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 3000"/>'
+        '</a:avLst></a:prstGeom></p:spPr></p:pic>')
+
+
 def write_pptx(path: Path, title: str, slides: List[Dict[str, Any]],
-               author: str = "RealAI") -> Path:
-    """Write a valid, openable .pptx (PowerPoint / LibreOffice / Keynote)."""
+               author: str = "RealAI", cover_image: Optional[bytes] = None) -> Path:
+    """Write a valid, openable .pptx (PowerPoint / LibreOffice / Keynote).
+
+    ``cover_image`` (PNG/JPEG bytes) is placed on the title slide.
+    """
     n = len(slides)
+    img_ext = None
+    if cover_image:
+        img_ext = "png" if cover_image[:4] == b"\x89PNG" else "jpeg"
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     ct_slides = "\n".join(
         f'<Override PartName="/ppt/slides/slide{i}.xml" ContentType="application/'
@@ -638,8 +851,12 @@ def write_pptx(path: Path, title: str, slides: List[Dict[str, Any]],
         f'<Relationship Id="rId{i + 2}" Type="http://schemas.openxmlformats.org/'
         f'officeDocument/2006/relationships/slide" Target="slides/slide{i}.xml"/>'
         for i in range(1, n + 1))
+    if img_ext:
+        ct_slides += (f'\n<Default Extension="{img_ext}" ContentType="image/{img_ext}"/>')
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", _CT.format(slides=ct_slides))
+        if img_ext:
+            z.writestr(f"ppt/media/cover.{img_ext}", cover_image)
         z.writestr("_rels/.rels", _RELS)
         z.writestr("docProps/core.xml", _CORE.format(
             title=_xml(title), author=_xml(author), ts=ts))
@@ -654,6 +871,12 @@ def write_pptx(path: Path, title: str, slides: List[Dict[str, Any]],
         for i, s in enumerate(slides, 1):
             z.writestr(f"ppt/slides/slide{i}.xml",
                        _slide_xml(i, n, s["title"], s.get("bullets", []),
-                                  i == 1, author))
-            z.writestr(f"ppt/slides/_rels/slide{i}.xml.rels", _SLIDE_RELS)
+                                  i == 1, author, with_image=(i == 1 and bool(img_ext))))
+            rels = _SLIDE_RELS
+            if i == 1 and img_ext:
+                rels = rels.replace("</Relationships>",
+                    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/'
+                    'officeDocument/2006/relationships/image" '
+                    f'Target="../media/cover.{img_ext}"/></Relationships>')
+            z.writestr(f"ppt/slides/_rels/slide{i}.xml.rels", rels)
     return path
