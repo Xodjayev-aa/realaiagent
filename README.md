@@ -522,6 +522,42 @@ Counters survive restarts (rebuilt from the ledger on boot).
    (/approve /deny /vip /topup …)       reports + security alerts
 ```
 
+## Optional: ReAct loop with a local LLM (`realai react`)
+
+`realaiagent/react.py` is a hand-written **Think ➔ Act ➔ Observe** loop —
+no LangChain / AutoGen / CrewAI, no `httpx`, no `pydantic`, still pure
+stdlib. It is *optional* and separate from the core cognitive agent: the
+only model it talks to is a **local** [Ollama](https://ollama.com) server
+on your machine (nothing leaves it, no keys).
+
+```bash
+ollama run qwen2.5-coder:7b          # in another terminal
+python -m realaiagent react "Read config.json and calculate (142 * 3) / 2" --data ./data
+```
+
+Each turn the model must answer with `THOUGHT:` + one `ACTION:` JSON
+block; the loop parses it, runs the tool, and feeds `OBSERVATION:` back
+into the message memory until `final_answer` or `--max-steps`.
+
+Built-in tools:
+
+| tool                   | what it does                                                   |
+|------------------------|----------------------------------------------------------------|
+| `calculate_expression` | arithmetic via an `ast` walker — **no `eval`**, numbers/operators only |
+| `read_local_file`      | really reads a file, confined to `Config.file_roots` (same guard as `files.read`) |
+| `final_answer`         | ends the loop and returns the output                           |
+
+Programmatic / evaluation-harness use:
+
+```python
+from realaiagent.react import arena_agent_handler
+result = arena_agent_handler({"prompt": "...", "max_steps": 6, "model": "qwen2.5-coder:7b"})
+# {"status": "success"|"incomplete"|"error", "agent_name": ..., "output": ..., "iterations": n, "trace": [...]}
+```
+
+The backend is any `callable(messages) -> str`, so tests (`tests/test_react.py`)
+drive the loop with a scripted model and need no server.
+
 ## Deployment (keeping it stable & safe, per your plan)
 
 ### Vercel (free tier) — 0.3.0

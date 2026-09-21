@@ -131,6 +131,37 @@ def _cmd_owner_key(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_react(args: argparse.Namespace) -> int:
+    """Run one ReAct (Think -> Act -> Observe) task against a local Ollama.
+
+    Pure stdlib; the model is the only thing outside this process and it
+    runs on your machine. Prints each step, then the Arena-style result.
+    """
+    import json
+    from pathlib import Path as _P
+    from .config import Config
+    from .react import arena_agent_handler
+
+    cfg = Config.from_env()
+    if args.data is not None:
+        cfg.data_dir = _P(args.data).expanduser().resolve()
+        cfg.file_roots = [cfg.data_dir]
+
+    def show(step) -> None:
+        print(f"\n--- step {step.iteration} ---")
+        if step.thought:
+            print(f"THOUGHT: {step.thought}")
+        print(f"ACTION : {json.dumps(step.action) if step.action else '(invalid)'}")
+        print(f"OBSERVE: {step.observation}")
+
+    payload = {"prompt": args.prompt, "max_steps": args.max_steps,
+               "model": args.model, "ollama_url": args.ollama_url}
+    result = arena_agent_handler(payload, cfg=cfg, on_step=show)
+    result.pop("trace", None)
+    print("\n" + json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result["status"] == "success" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The CLI parser (its own function so the defaults are testable).
 
@@ -168,6 +199,19 @@ def build_parser() -> argparse.ArgumentParser:
                             help="run an offline scripted conversation")
     p_demo.add_argument("--data", default="data/demo")
     p_demo.set_defaults(func=_cmd_demo)
+
+    p_react = sub.add_parser(
+        "react",
+        help="run one Think->Act->Observe task with a local Ollama model")
+    p_react.add_argument("prompt", help="the task to solve")
+    p_react.add_argument("--model", default="qwen2.5-coder:7b",
+                         help="Ollama model name (default qwen2.5-coder:7b)")
+    p_react.add_argument("--ollama-url", default="http://localhost:11434",
+                         help="local Ollama base URL")
+    p_react.add_argument("--max-steps", type=int, default=6)
+    p_react.add_argument("--data", default=None,
+                         help="data dir the read_local_file tool is confined to")
+    p_react.set_defaults(func=_cmd_react)
 
     p_key = sub.add_parser("owner-key", help="print the stored owner key")
     p_key.add_argument("--data", default="data")
