@@ -522,9 +522,207 @@ Counters survive restarts (rebuilt from the ledger on boot).
    (/approve /deny /vip /topup …)       reports + security alerts
 ```
 
+## Talk, draw, speak, listen, present — hosted (free, keyless) or local
+
+### `REALAI_PROVIDER=hosted` — 0.6.0, works on Vercel, no key, no account
+
+Set **one** variable and the deployed product talks fluently, draws images,
+builds presentations with an AI cover slide and speaks/listens — on the
+Vercel free tier, with nothing to install and nothing to sign up for:
+
+```
+REALAI_PROVIDER=hosted
+```
+
+Honesty about what that is: the requests go to the public, keyless
+inference API of the [Pollinations](https://pollinations.ai) open-source
+project (OpenAI-compatible text at `text.pollinations.ai`, images at
+`image.pollinations.ai`, TTS/STT via its `openai-audio` model). It is
+called from the server with `private=true` (nothing appears in public
+feeds) and end users never see the provider — the UI, the persona and
+`/public/capabilities` only say `provider: hosted`. Anonymous use is
+rate-limited (roughly one request every 15 s per IP) and images may carry
+a small watermark; an optional `REALAI_HOSTED_TOKEN` (free, from
+auth.pollinations.ai) lifts both — **optional**, never required.
+The trainable core, the ledger, memory and owner controls are untouched:
+the hosted model is a tool the agent calls, not the agent.
+
+| variable | default | meaning |
+|---|---|---|
+| `REALAI_PROVIDER` | `local` | `hosted` turns every ability on without local engines |
+| `REALAI_HOSTED_TEXT_MODEL` | `openai` | chat / outline / STT model name |
+| `REALAI_HOSTED_IMAGE_MODEL` | `flux` | `flux`, `turbo`, `kontext` |
+| `REALAI_HOSTED_VOICE` | `nova` | alloy · echo · fable · onyx · nova · shimmer |
+| `REALAI_HOSTED_TOKEN` | *(none)* | optional; removes the anonymous rate limit / watermark |
+| `REALAI_HOSTED_TIMEOUT` | `60` | seconds |
+
+A local URL always wins over hosted: set `REALAI_LLM_URL` and talk goes
+to your Ollama while images stay hosted, etc.
+
+### Telegram as the archive ("folders")
+
+When the Telegram bot is configured, **every generated file** (image,
+`.pptx`, audio) is uploaded to Telegram right after it is created —
+Telegram stores it for free, without limits, and the returned `file_id` is
+kept in the database (`tg_file:<name>`) so it can be re-sent later without
+re-uploading. By default files land in the owner chat with a `#image` /
+`#slides` / `#audio` caption (searchable). For real folders make a forum
+supergroup, add the bot, create one topic per kind and set:
+
+```
+REALAI_TG_ARCHIVE_CHAT_ID=-1001234567890
+REALAI_TG_ARCHIVE_TOPICS=image:12,slides:13,audio:14
+```
+
+### Local engines (optional, a machine you own)
+
+The trainable core stays exactly as it is. On top of it, `realaiagent/generative.py`
+adds the *ChatGPT / Gemini-style* abilities, each wired to an **open model
+running on your own machine**. There is no way to copy ChatGPT's or
+Gemini's model into a repository — their weights are proprietary — but the
+product surface around them is reproducible with open engines. Every
+backend is **off until you set its URL**; with nothing set the agent keeps
+its honest "I cannot do that" answers. Still stdlib-only, still no keys.
+
+| ability | you run (locally) | set | how it shows up |
+|---|---|---|---|
+| fluent conversation | [Ollama](https://ollama.com) — `ollama run llama3.1:8b` | `REALAI_LLM_URL=http://127.0.0.1:11434` `REALAI_LLM_MODEL=llama3.1:8b` | any message the classifier doesn't map to a command is answered by the model, with the recent turns + your memories as context. `status`, `turn on…`, `teach:` etc. still go to the engine |
+| images | [Stable Diffusion WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui) started with `--api` | `REALAI_IMAGE_URL=http://127.0.0.1:7860` | "draw me a …", "make a picture of …" → the image appears in the chat bubble |
+| listen (mic) | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-server` | `REALAI_STT_URL=http://127.0.0.1:8178` | a 🎤 button appears in the web chat |
+| speak | [Piper](https://github.com/rhasspy/piper) HTTP server **or** CLI | `REALAI_TTS_URL=http://127.0.0.1:5000` or `REALAI_TTS_COMMAND="piper --model en_US-lessac-medium.onnx"` | 🔊 on every reply; "say: hello" in chat |
+| presentations | nothing — built-in `.pptx` writer (zipped OOXML) | — | "make a presentation about …" → downloadable deck; the outline is written by the local LLM when one is connected, a fillable skeleton otherwise |
+
+Generated files live in `data/media/`, are served at `/media/<name>`
+(strict name pattern, no traversal) and expire after
+`REALAI_MEDIA_TTL_HOURS` (24). Every generation is counted under the
+`generative` category in the ledger.
+
+API (owner-issued key, `chat` scope):
+
+```
+GET  /v1/generate/capabilities            what is switched on (public)
+POST /v1/generate/talk        {"messages":[{"role":"user","content":"…"}]}  or {"message":"…"}
+POST /v1/generate/image       {"prompt":"…","width":768,"height":768,"steps":25}
+POST /v1/generate/speak       {"text":"…"}                     → {"url":"/media/….wav"}
+POST /v1/generate/transcribe  {"audio":"<base64>","mime":"audio/webm"} → {"text":"…"}
+POST /v1/generate/slides      {"topic":"…","count":6}  or {"slides":[{"title":"…","bullets":["…"]}]}
+POST /public/transcribe, /public/speak   keyless, per-visitor rate-limited (used by the web chat)
+```
+
+Hardware: a 7–8B chat model wants ~8 GB RAM; Stable Diffusion wants a
+GPU to be quick. These do **not** run on Vercel's free tier — point the
+URLs at a machine you own.
+
+## Optional: ReAct loop with a local LLM (`realai react`)
+
+`realaiagent/react.py` is a hand-written **Think ➔ Act ➔ Observe** loop —
+no LangChain / AutoGen / CrewAI, no `httpx`, no `pydantic`, still pure
+stdlib. It is *optional* and separate from the core cognitive agent: the
+only model it talks to is a **local** [Ollama](https://ollama.com) server
+on your machine (nothing leaves it, no keys).
+
+```bash
+ollama run qwen2.5-coder:7b          # in another terminal
+python -m realaiagent react "Read config.json and calculate (142 * 3) / 2" --data ./data
+```
+
+Each turn the model must answer with `THOUGHT:` + one `ACTION:` JSON
+block; the loop parses it, runs the tool, and feeds `OBSERVATION:` back
+into the message memory until `final_answer` or `--max-steps`.
+
+Built-in tools:
+
+| tool                   | what it does                                                   |
+|------------------------|----------------------------------------------------------------|
+| `calculate_expression` | arithmetic via an `ast` walker — **no `eval`**, numbers/operators only |
+| `read_local_file`      | really reads a file, confined to `Config.file_roots` (same guard as `files.read`) |
+| `final_answer`         | ends the loop and returns the output                           |
+
+Programmatic / evaluation-harness use:
+
+```python
+from realaiagent.react import arena_agent_handler
+result = arena_agent_handler({"prompt": "...", "max_steps": 6, "model": "qwen2.5-coder:7b"})
+# {"status": "success"|"incomplete"|"error", "agent_name": ..., "output": ..., "iterations": n, "trace": [...]}
+```
+
+The backend is any `callable(messages) -> str`, so tests (`tests/test_react.py`)
+drive the loop with a scripted model and need no server.
+
 ## Deployment (keeping it stable & safe, per your plan)
 
-### Vercel (free tier) — 0.3.0
+### Vercel + Turso (free tiers) — 0.5.0, the recommended way
+
+This is the "runs fully on the internet, keeps its memory" setup. Vercel
+runs the code; **Turso** (hosted SQLite / libSQL) holds *every* piece of
+state — owner key, hashing pepper, users, keys, memories, the trained
+intent model, goals, counters, generated decks. Without a database a
+Vercel function forgets everything on each cold start; with Turso it
+does not, and every function instance in every region sees the same
+brain. The driver is `realaiagent/libsql_http.py`: Turso's SQL-over-HTTP
+protocol spoken with `urllib`, so the deploy still has **zero
+dependencies**.
+
+```bash
+# 1. database (once)
+curl -sSfL https://get.tur.so/install.sh | bash
+turso auth signup                       # or: turso auth login
+turso db create realai
+turso db show realai --url              # libsql://realai-<you>.turso.io
+turso db tokens create realai           # eyJ...
+
+# 2. deploy
+npm i -g vercel && vercel link
+vercel env add REALAI_DATABASE_URL      # paste the libsql:// url
+vercel env add REALAI_DATABASE_TOKEN    # paste the token
+vercel env add REALAI_WEB_TOKEN         # any long random string (gates /dashboard, /approve, /cron/tick)
+vercel env add CRON_SECRET              # any long random string (Vercel Cron auth)
+vercel --prod
+
+# 3. your owner key (read from the shared database - the same one Vercel uses)
+export REALAI_DATABASE_URL=libsql://realai-<you>.turso.io REALAI_DATABASE_TOKEN=eyJ...
+python -m realaiagent db-check          # "connected ... schema ok"
+python -m realaiagent owner-key         # rxa_...  (same key every time, from any machine)
+```
+
+Then open `https://<project>.vercel.app/` — the public chat — and use
+the `rxa_` key against `/v1/*`. Optional: `REALAI_TELEGRAM_BOT_TOKEN` +
+`REALAI_TELEGRAM_CHAT_ID` + `REALAI_TELEGRAM_WEBHOOK_SECRET` and
+`python examples/register_webhook.py https://<project>.vercel.app/webhook`
+for Telegram control.
+
+**How autonomy works without a background thread.** Serverless functions
+cannot run the 10-second thinking loop. Instead the agent thinks
+(`Agent.tick_if_due`) at most once per `REALAI_SERVERLESS_TICK_SECONDS`
+(60) on the back of a chat request — the "last tick" timestamp is a
+database row, so all instances share one cadence — and `vercel.json`
+declares a **Vercel Cron** hitting `GET /api/cron/tick` every 10 minutes
+(Hobby-tier crons run daily-ish; Pro runs on schedule) so goals advance
+and memory consolidates even with no visitors.
+
+**What you get on the free tiers.** Turso free: 5 GB, ~500 M row reads
+per month — the whole agent uses a few dozen rows per request. Vercel
+Hobby: 100 GB-h of functions, 30 s max duration (set in `vercel.json`).
+The local generative backends (Ollama, Stable Diffusion, whisper, Piper)
+are **not** available on Vercel — there is no GPU and no localhost; set
+`REALAI_PROVIDER=hosted` (free, keyless — see above) or point
+`REALAI_LLM_URL` etc. at a server you own that is reachable from the
+internet. Presentations work
+everywhere: the `.pptx` writer is pure Python and the file is stored in
+the database.
+
+**Supabase / Postgres instead?** Not supported, on purpose: the whole
+codebase is SQLite SQL (`INSERT OR IGNORE`, `ON CONFLICT`, `pragma_table_info`,
+`json` as TEXT). Turso *is* SQLite, so every statement runs unchanged.
+Porting to Postgres would mean rewriting ~110 queries and a driver — if
+you truly need Supabase, say so and it becomes a separate `storage`
+backend.
+
+### Vercel without a database (0.3.0 behaviour)
+
+Still works: with no `REALAI_DATABASE_URL` the data dir is `/tmp/realai`
+and state lives only as long as the function instance. Fine for a demo,
+wrong for a product.
 
 The whole product — API, live web dashboard, 15 SSE streams, and the
 Telegram webhook — is **one pure-stdlib Python serverless function**
@@ -687,6 +885,18 @@ Environment variables (all optional):
 | `REALAI_SMTP_TIMEOUT` | `10` | seconds; mail never blocks a request longer |
 | `VERCEL` | *(auto)* | Vercel sets `1` → data dir `/tmp/realai`, webhook mode |
 | `REALAI_AGENT_NAME` / `REALAI_OWNER_NAME` | `REAL` / `Owner` | identity |
+| `REALAI_DATABASE_URL` (or `TURSO_DATABASE_URL`) | *(none = local SQLite)* | Turso/libSQL database, `libsql://…` or `https://…` |
+| `REALAI_DATABASE_TOKEN` (or `TURSO_AUTH_TOKEN`) | *(none)* | Turso auth token |
+| `REALAI_SERVERLESS_TICK_SECONDS` | `60` | min. seconds between autonomous thoughts on serverless |
+| `CRON_SECRET` | *(none)* | accepted as `Authorization: Bearer` on `/cron/tick` (Vercel Cron sets it) |
+| `REALAI_PROVIDER` | `local` | `hosted` = keyless public inference for talk/images/voice (see above) |
+| `REALAI_HOSTED_TEXT_MODEL` / `REALAI_HOSTED_IMAGE_MODEL` / `REALAI_HOSTED_VOICE` | `openai` / `flux` / `nova` | hosted model choices |
+| `REALAI_HOSTED_TOKEN` | *(none)* | optional; lifts the anonymous rate limit |
+| `REALAI_TG_ARCHIVE_CHAT_ID` / `REALAI_TG_ARCHIVE_TOPICS` | owner chat / *(none)* | where generated files are archived on Telegram |
+| `REALAI_LLM_URL` / `REALAI_LLM_MODEL` | *(none)* / `llama3.1:8b` | local Ollama for fluent talk |
+| `REALAI_IMAGE_URL` | *(none)* | Stable Diffusion WebUI (`--api`) for images |
+| `REALAI_STT_URL` / `REALAI_TTS_URL` / `REALAI_TTS_COMMAND` | *(none)* | whisper.cpp / Piper for voice |
+| `REALAI_MEDIA_TTL_HOURS` | `24` | generated files expire after this |
 
 ## Files you own
 
@@ -706,6 +916,9 @@ realaiagent/           the whole agent — pure Python stdlib
   telegram.py          master control, webhook mode, free-will reports
   web.py               web layer: SSE hub (15 topics), dashboard, /approve
   vercel.py            WSGI adapter the Vercel Python runtime actually loads
+  libsql_http.py       Turso / libSQL SQL-over-HTTP driver (stdlib urllib)
+  generative.py        local LLM talk, images, speech, built-in .pptx writer
+  react.py             Think -> Act -> Observe loop over a local LLM
   actions/             permission gate, executor, built-in actions
   api/                 keys, HTTP server (same WebApp as serverless), routes
 api/                   Vercel serverless entrypoints (free tier)

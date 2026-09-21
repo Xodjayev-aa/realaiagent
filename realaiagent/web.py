@@ -252,15 +252,29 @@ class WebApp:
             return self._webhook(headers, raw_body)
         if path in ("/logo.svg", "/favicon.ico"):
             return self._asset(path)
+        if path.startswith("/media/") and method == "GET":
+            return self._media(path[len("/media/"):])
         if path == "/approve":
             return self._approve(method, query, headers, raw_body)
         if path == "/stream" or path.startswith("/stream/"):
             return self._stream(path, query, headers)
         if path == "/dashboard":
             return self._dashboard(query, headers)
+        if path == "/cron/tick":
+            return self._cron_tick(query, headers)
 
         status, ctype, body, extra = dispatch(
             self.agent, self.limiter, method, path, query, headers, raw_body)
+
+        # Serverless autonomy: no background thread exists on Vercel, so
+        # the agent thinks (rate-limited through the database) on the back
+        # of ordinary traffic. Self-hosted keeps its own tick thread.
+        if self.agent.cfg.is_vercel and method == "POST" \
+                and path in ("/v1/chat", "/public/chat"):
+            try:
+                self.agent.tick_if_due()
+            except Exception:  # noqa: BLE001
+                pass
 
         # feed the "plans" topic with every completed chat turn
         if method == "POST" and path in ("/v1/chat", "/public/chat") \
@@ -277,6 +291,31 @@ class WebApp:
             except (ValueError, AttributeError):
                 pass
         return status, ctype, body, extra
+
+    def _cron_tick(self, query: Dict[str, str],
+                   headers: Dict[str, str]) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """``GET /cron/tick`` — one autonomous thought, for Vercel Cron.
+
+        Guarded like the dashboard (``REALAI_WEB_TOKEN``); Vercel Cron also
+        sends ``Authorization: Bearer $CRON_SECRET`` which is accepted when
+        that env var is set.
+        """
+        import os as _os
+        secret = _os.environ.get("CRON_SECRET", "")
+        auth = headers.get("authorization", "")
+        if secret and auth == f"Bearer {secret}":
+            allowed = True
+        else:
+            allowed, _reason, _retry = self._web_gate(query, headers, "cron")
+        if not allowed:
+            return self._json(401, {"error": {"code": "unauthorized",
+                                              "message": "cron token required"}})
+        thought = self.agent.tick_if_due(force=True)
+        snap = self.agent.mind.snapshot()
+        return self._json(200, {"ok": True, "ticked": thought,
+                                "thoughts": snap["thoughts"],
+                                "mood": snap["mood"]["note"],
+                                "storage": self.agent.storage.backend})
 
     # ------------------------------------------------------------- helpers
 
@@ -527,6 +566,25 @@ class WebApp:
             "Cache-Control": "public, max-age=3600",
         }
 
+    def _media(self, name: str) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """``/media/<file>`` — images, audio and decks the agent generated.
+
+        Only files the generative layer itself wrote (strict name pattern,
+        inside ``data/media``) are served; they expire after
+        ``media_ttl_hours``.
+        """
+        gen = getattr(self.agent, "generative", None)
+        found = gen.fetch_media(name) if gen is not None else None
+        if found is None:
+            return 404, "application/json", json.dumps({"error": {
+                "code": "not_found", "message": "no such media"}}).encode(), {}
+        headers = {"Cache-Control": "private, max-age=3600"}
+        if name.endswith(".pptx"):
+            headers["Content-Disposition"] = \
+                f'attachment; filename="{self.agent.mind.agent_name}-presentation.pptx"'
+        self.agent.storage.count("requests", "media", detail={"name": name})
+        return 200, found["mime"], found["data"], headers
+
     # --------------------------------------------------------- owner inbox
 
     def _approve(self, method: str, query: Dict[str, str],
@@ -721,7 +779,7 @@ _DASHBOARD_HTML = Template("""<!doctype html>
  footer { color:#5c6577; font-size:12px; margin-top:12px; }
 </style></head><body><main>
  <h1>🤖 $agent — RealAI · live</h1>
- <div class="sub">fully local, owner-controlled · no external AI ·
+ <div class="sub">owner-controlled · everything counted ·
   pure Python stdlib · Vercel free tier (SSE windows auto-reconnect)</div>
  <div class="bar">
    <span class="stat" id="stat">starting…</span>

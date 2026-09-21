@@ -40,6 +40,7 @@ def healthz(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
         "uptime_s": snap["uptime_s"],
         "autonomy": snap["autonomy"],
         "mood": snap["mood"]["note"],
+        "storage": agent.storage.backend,
     })
 
 
@@ -282,6 +283,113 @@ def chat(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
         text, sender=sender, scopes=key.get("scopes", []),
         key_id=key.get("id"))
     return _ok({**res, "request_id": ctx.get("request_id")})
+
+
+# -------------------------------------------------------------- generative
+
+def gen_capabilities(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Which generative abilities are switched on (all local, all optional)."""
+    return _ok({"capabilities": agent.generative.capabilities()})
+
+
+def gen_talk(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Free conversation with the local language model (ChatGPT-style).
+
+    ``messages`` = OpenAI-style ``[{"role","content"}]`` or a single
+    ``message``. Nothing is sent off the machine: the model is Ollama on
+    the owner's host.
+    """
+    msgs = body.get("messages")
+    if not msgs:
+        text = str(body.get("message", "")).strip()
+        if not text:
+            return _err(400, "bad_request", "message or messages required")
+        msgs = [{"role": "user", "content": text}]
+    if not isinstance(msgs, list) or len(msgs) > 40 or not all(
+            isinstance(m, dict) and m.get("role") in ("user", "assistant", "system")
+            and isinstance(m.get("content"), str) for m in msgs):
+        return _err(400, "bad_request", "messages must be a list of "
+                                        "{role, content} (max 40)")
+    res = agent.generative.chat(
+        [{"role": m["role"], "content": m["content"][:8000]} for m in msgs])
+    if not res.ok:
+        return _err(503, "unavailable", res.error)
+    return _ok({"response": res.text, **res.to_dict(),
+                "request_id": ctx.get("request_id")})
+
+
+def gen_image(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    prompt = str(body.get("prompt", "")).strip()
+    if not prompt:
+        return _err(400, "bad_request", "prompt is required")
+    res = agent.generative.image(
+        prompt, width=int(body.get("width", 768)),
+        height=int(body.get("height", 768)), steps=int(body.get("steps", 25)),
+        negative=str(body.get("negative_prompt", "")))
+    if not res.ok:
+        return _err(503, "unavailable", res.error)
+    return _ok({**res.to_dict(), "request_id": ctx.get("request_id")})
+
+
+def gen_speak(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    text = str(body.get("text", "")).strip()
+    if not text:
+        return _err(400, "bad_request", "text is required")
+    res = agent.generative.speak(text)
+    if not res.ok:
+        return _err(503, "unavailable", res.error)
+    return _ok({**res.to_dict(), "request_id": ctx.get("request_id")})
+
+
+def gen_transcribe(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Speech → text. ``audio`` is base64 (WAV/WebM/OGG), ``mime`` optional."""
+    import base64 as _b64
+    raw = body.get("audio")
+    if not isinstance(raw, str) or not raw:
+        return _err(400, "bad_request", "audio (base64) is required")
+    try:
+        audio = _b64.b64decode(raw.split(",", 1)[-1], validate=False)
+    except Exception:  # noqa: BLE001
+        return _err(400, "bad_request", "audio is not valid base64")
+    mime = str(body.get("mime", "audio/wav"))
+    ext = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mpeg": "mp3",
+           "audio/mp4": "m4a"}.get(mime.split(";")[0], "wav")
+    res = agent.generative.transcribe(audio, filename=f"audio.{ext}", mime=mime)
+    if not res.ok:
+        return _err(503, "unavailable", res.error)
+    return _ok({**res.to_dict(), "request_id": ctx.get("request_id")})
+
+
+def gen_slides(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Build a .pptx. ``topic`` (LLM/template outline) or explicit ``slides``."""
+    topic = str(body.get("topic", "")).strip()
+    slides = body.get("slides")
+    if slides is not None and not isinstance(slides, list):
+        return _err(400, "bad_request", "slides must be a list")
+    if not topic and not slides:
+        return _err(400, "bad_request", "topic or slides required")
+    res = agent.generative.presentation(topic, slides=slides,
+                                        count=int(body.get("count", 6)))
+    if not res.ok:
+        return _err(422, "failed", res.error)
+    return _ok({**res.to_dict(), "request_id": ctx.get("request_id")})
+
+
+def public_transcribe(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Keyless mic → text for the website chat (per-visitor rate limit)."""
+    visitor = visitor_id(ctx)
+    if not _demo_limiter(agent.cfg).allow(visitor):
+        return _err(429, "rate_limited", "public demo is rate-limited")
+    return gen_transcribe(agent, body, ctx)
+
+
+def public_speak(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """Keyless read-aloud for the website chat (per-visitor rate limit)."""
+    visitor = visitor_id(ctx)
+    if not _demo_limiter(agent.cfg).allow(visitor):
+        return _err(429, "rate_limited", "public demo is rate-limited")
+    body = {**body, "text": str(body.get("text", ""))[:1200]}
+    return gen_speak(agent, body, ctx)
 
 
 # ------------------------------------------------------------------- goals
@@ -704,6 +812,15 @@ ROUTES: List[Tuple[str, str, List[str], Handler]] = [
     ("GET", "/v1/events", ["chat"], events),
 
     ("POST", "/v1/chat", ["chat"], chat),
+
+    ("GET", "/v1/generate/capabilities", [], gen_capabilities),
+    ("POST", "/v1/generate/talk", ["chat"], gen_talk),
+    ("POST", "/v1/generate/image", ["chat"], gen_image),
+    ("POST", "/v1/generate/speak", ["chat"], gen_speak),
+    ("POST", "/v1/generate/transcribe", ["chat"], gen_transcribe),
+    ("POST", "/v1/generate/slides", ["chat"], gen_slides),
+    ("POST", "/public/transcribe", [], public_transcribe),
+    ("POST", "/public/speak", [], public_speak),
 
     ("GET", "/v1/goals", ["chat"], goals_list),
     ("POST", "/v1/goals", ["admin"], goals_create),

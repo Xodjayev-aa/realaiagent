@@ -399,6 +399,16 @@ _CSS = """
  #typing .d:nth-child(3) { animation-delay:.3s; }
  @keyframes bob { 0%,60%,100% { transform:translateY(0); opacity:.5; }
    30% { transform:translateY(-4px); opacity:1; } }
+ .att { margin-top:8px; }
+ img.inl { max-width:100%; max-height:420px; border-radius:10px; display:block;
+   margin:6px 0; border:1px solid var(--line); }
+ .att img { max-width:100%; max-height:420px; border-radius:10px;
+   border:1px solid var(--line); display:block; }
+ .att audio { width:100%; max-width:420px; display:block; }
+ .tts { background:none; border:0; cursor:pointer; opacity:.55; font-size:14px;
+   padding:2px 4px; margin-top:4px; } .tts:hover { opacity:1; }
+ #mic.rec { background:#b91c1c; color:#fff; animation:pulse 1s infinite; }
+ @keyframes pulse { 50% { opacity:.6; } }
  .composer { display:flex; gap:8px; padding:12px; border-top:1px solid
    var(--line); background:var(--panel); align-items:flex-end; }
  .composer textarea { resize:none; min-height:44px; max-height:180px;
@@ -547,6 +557,8 @@ _CHAT_BODY = Template("""
    <textarea id="input" rows="1" autocomplete="off"
      placeholder="talk to it — no key needed · Enter sends, Shift+Enter newline"
      aria-label="message to $agent"></textarea>
+   <button class="act ghost" id="mic" type="button" title="speak"
+     style="display:none" aria-label="record a voice message">🎤</button>
    <button class="act" id="send" type="submit">Send</button>
   </form>
  </section>
@@ -592,6 +604,8 @@ function md(src){
   var lines = String(src == null ? "" : src).split("\\n");
   var out = [], para = [], list = null, code = false;
   function inline(t){
+    t = t.replace(/!\\[([^\\]]*)\\]\\((\\/media\\/[\\w.-]+)\\)/g,
+                  '<img class="inl" src="$2" alt="$1">');
     t = t.replace(/`([^`]+)`/g, "<code>$1</code>")
          .replace(/\\*\\*([^*]+)\\*\\*/g, "<strong>$1</strong>")
          .replace(/(^|[^*])\\*([^*\\n]+)\\*/g, "$1<em>$2</em>");
@@ -674,7 +688,49 @@ function upsert(s){
   save(list);
 }
 /* --- rendering --- */
-function bubble(role, text, animate){
+function attach(body, atts){
+  if (!atts || !atts.length) return;
+  atts.forEach(function(a){
+    if (!a || !a.url || !/^\\/media\\//.test(a.url)) return;
+    var box = document.createElement("div");
+    box.className = "att";
+    if (a.kind === "image"){
+      var img = document.createElement("img");
+      img.src = a.url; img.alt = "generated image"; img.loading = "lazy";
+      var lnk = document.createElement("a"); lnk.href = a.url; lnk.target = "_blank";
+      lnk.appendChild(img); box.appendChild(lnk);
+    } else if (a.kind === "audio"){
+      var au = document.createElement("audio");
+      au.controls = true; au.src = a.url; au.autoplay = !!a.autoplay;
+      box.appendChild(au);
+    } else {
+      var dl = document.createElement("a");
+      dl.href = a.url; dl.className = "act"; dl.download = a.name || "";
+      dl.textContent = "⬇ download " + (a.name || "file");
+      box.appendChild(dl);
+    }
+    body.appendChild(box);
+  });
+}
+function speakBtn(body, text){
+  if (!CAPS.speak) return;
+  var b = document.createElement("button");
+  b.type = "button"; b.className = "tts"; b.title = "read aloud";
+  b.textContent = "🔊";
+  b.onclick = function(){
+    b.disabled = true; b.textContent = "…";
+    fetch("/public/speak", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text }) })
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      b.textContent = "🔊"; b.disabled = false;
+      if (j.url) attach(body, [{ kind: "audio", url: j.url, autoplay: true }]);
+    }).catch(function(){ b.textContent = "🔊"; b.disabled = false; });
+  };
+  body.appendChild(b);
+}
+function bubble(role, text, animate, atts){
   var wrap = document.createElement("div");
   wrap.className = "msg " + (role === "user" ? "me" : "ai");
   var av = document.createElement("div");
@@ -690,13 +746,18 @@ function bubble(role, text, animate){
   bub.appendChild(who); bub.appendChild(body);
   wrap.appendChild(av); wrap.appendChild(bub);
   log.appendChild(wrap);
-  if (role === "user" || !animate) body.innerHTML = md(text);
-  else reveal(body, text);
+  function after(){
+    attach(body, atts);
+    if (role !== "user") speakBtn(body, text);
+    log.scrollTop = log.scrollHeight;
+  }
+  if (role === "user" || !animate){ body.innerHTML = md(text); after(); }
+  else reveal(body, text, after);
   log.scrollTop = log.scrollHeight;
   return body;
 }
 /* streaming reveal: words land progressively, click to skip */
-function reveal(el, text){
+function reveal(el, text, onDone){
   var parts = String(text).split(/(\\s+)/);
   var i = 0, done = false, timer = null;
   function finish(){
@@ -705,6 +766,7 @@ function reveal(el, text){
     if (timer) clearTimeout(timer);
     el.innerHTML = md(text);
     log.scrollTop = log.scrollHeight;
+    if (onDone) onDone();
   }
   el.addEventListener("click", finish);
   (function step(){
@@ -750,8 +812,9 @@ function renderSessions(){
   });
 }
 function paint(s){
+  /* attachments are re-rendered from the saved message (see bubble) */
   log.innerHTML = "";
-  (s.messages || []).forEach(function(m){ bubble(m.role, m.text, false); });
+  (s.messages || []).forEach(function(m){ bubble(m.role, m.text, false, m.atts); });
   if (!(s.messages || []).length) greet();
 }
 function greet(){
@@ -806,10 +869,11 @@ function sendMsg(){
     if (status === 429) reply = "Slow down a little: the keyless demo is "
       + "rate-limited per visitor. Try again in a few seconds.";
     if (j.session_id) mine.session_id = j.session_id;
-    mine.messages.push({ role: "ai", text: reply, ts: Date.now() });
+    var atts = (j.meta && j.meta.attachments) || [];
+    mine.messages.push({ role: "ai", text: reply, ts: Date.now(), atts: atts });
     mine.ts = Date.now();
     upsert(mine);
-    bubble("ai", reply, true);
+    bubble("ai", reply, true, atts);
     renderSessions();
     input.focus();
   }).catch(function(){
@@ -831,6 +895,58 @@ input.addEventListener("input", function(){
   input.style.height = "auto";
   input.style.height = Math.min(180, input.scrollHeight) + "px";
 });
+/* --- generative abilities: discovered at load, all local, all optional --- */
+var CAPS = { talk:false, images:false, listen:false, speak:false };
+var micBtn = document.getElementById("mic");
+fetch("/v1/generate/capabilities").then(function(r){ return r.json(); })
+.then(function(j){
+  var c = (j && j.capabilities) || {};
+  Object.keys(CAPS).forEach(function(k){ CAPS[k] = !!(c[k] && c[k].enabled); });
+  if (CAPS.listen && navigator.mediaDevices && window.MediaRecorder)
+    micBtn.style.display = "";
+  var hints = [];
+  if (CAPS.talk) hints.push("talk about anything");
+  if (CAPS.images) hints.push("\\"draw me a …\\"");
+  hints.push("\\"make a presentation about …\\"");
+  if (CAPS.speak) hints.push("🔊 read aloud");
+  input.placeholder = hints.join(" · ") + " · Enter sends";
+}).catch(function(){});
+var rec = null, chunks = [];
+function stopRec(){
+  if (rec && rec.state !== "inactive") rec.stop();
+  micBtn.classList.remove("rec"); micBtn.textContent = "🎤";
+}
+micBtn.addEventListener("click", function(){
+  if (rec && rec.state === "recording"){ stopRec(); return; }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream){
+    chunks = [];
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = function(e){ if (e.data.size) chunks.push(e.data); };
+    rec.onstop = function(){
+      stream.getTracks().forEach(function(t){ t.stop(); });
+      var blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+      var fr = new FileReader();
+      fr.onload = function(){
+        busy(true);
+        fetch("/public/transcribe", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ audio: fr.result, mime: blob.type }) })
+        .then(function(r){ return r.json(); })
+        .then(function(j){
+          busy(false);
+          if (j.text){ input.value = j.text; sendMsg(); }
+          else bubble("ai", "I could not hear that" + (j.error ? ": " + j.error.message : "."), true);
+        }).catch(function(){ busy(false); });
+      };
+      fr.readAsDataURL(blob);
+    };
+    rec.start();
+    micBtn.classList.add("rec"); micBtn.textContent = "⏹";
+    setTimeout(stopRec, 30000);
+  }).catch(function(){
+    bubble("ai", "The browser did not allow microphone access.", true);
+  });
+});
 (function boot(){
   var list = load();
   if (list.length) openSession(list[0].id); else newChat();
@@ -850,8 +966,8 @@ def chat_page(agent: Any, tagline: Optional[str] = None) -> str:
         tagline=esc(tagline or cfg.brand_tagline),
         rate=int(getattr(cfg, "demo_rate_per_min", 12)))
     return (_head(name, f"{name} — your own AI, live", "chat",
-                  f"Chat with {name}, a fully local cognitive AI. No key "
-                  f"needed, no external AI involved.")
+                  f"Chat with {name}: talk, draw images, build presentations. "
+                  f"No key, no signup.")
             + body + _footer(agent) + _NAV_JS
             + _CHAT_JS.replace("@@AGENT@@", esc(name)))
 

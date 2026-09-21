@@ -19,6 +19,7 @@ Disabled (no-ops) unless a bot token AND chat id are configured.
 from __future__ import annotations
 
 import json
+import uuid
 import queue
 import threading
 import time
@@ -93,6 +94,49 @@ class Telegram:
         except Exception:  # noqa: BLE001
             self.storage.count("telegram", "send_failed")
             return False
+
+    # ------------------------------------------------------- file archive
+
+    def send_file(self, name: str, data: bytes, mime: str = "",
+                  caption: str = "", chat_id: Optional[str] = None,
+                  thread_id: Optional[int] = None,
+                  timeout: float = 30.0) -> Optional[str]:
+        """Upload a file (sendDocument, multipart) and return its file_id.
+
+        Telegram keeps the bytes forever and the file_id lets the bot
+        re-send it later without re-uploading, so the owner's chat (or a
+        forum topic per kind) becomes a free, unlimited archive.
+        """
+        if not self.enabled:
+            return None
+        boundary = "----realai" + uuid.uuid4().hex
+        fields = {"chat_id": str(chat_id or self.chat_id)}
+        if caption:
+            fields["caption"] = caption[:1000]
+        if thread_id:
+            fields["message_thread_id"] = str(thread_id)
+        body = bytearray()
+        for k, v in fields.items():
+            body += (f"--{boundary}\r\nContent-Disposition: form-data; "
+                     f"name=\"{k}\"\r\n\r\n{v}\r\n").encode()
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; "
+                 f"name=\"document\"; filename=\"{name}\"\r\n"
+                 f"Content-Type: {mime or 'application/octet-stream'}"
+                 f"\r\n\r\n").encode()
+        body += data + f"\r\n--{boundary}--\r\n".encode()
+        url = _API.format(token=self.token, method="sendDocument")
+        req = urllib.request.Request(url, data=bytes(body), method="POST")
+        req.add_header("Content-Type",
+                       f"multipart/form-data; boundary={boundary}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                out = json.loads(resp.read().decode())
+            doc = (out.get("result") or {}).get("document") or {}
+            self.storage.count("telegram", "archived")
+            return doc.get("file_id")
+        except Exception:  # noqa: BLE001
+            self.storage.count("telegram", "archive_failed")
+            return None
 
     def set_webhook(self, url: str, secret_token: str = "") -> Any:
         """Point the owner's bot at the Vercel deployment (webhook mode)."""

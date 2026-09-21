@@ -40,7 +40,8 @@ from .users import UserManager
 class Agent:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.storage = Storage(cfg.db_path)
+        self.storage = Storage(cfg.db_path, database_url=cfg.database_url,
+                               auth_token=cfg.database_token)
         self.mind = Mind(self.storage, cfg.agent_name, cfg.owner_name)
         raw_model = self.storage.state_get("nlp.model")
         self.model = IntentModel.from_json(raw_model) if raw_model else IntentModel()
@@ -63,6 +64,13 @@ class Agent:
         # The product's voice: multi-turn context, memory recall, honest
         # scope. The pipeline above stays exactly as it was for API clients.
         self.conversation = ConversationManager(self)
+        # Optional local generative backends (Ollama / SD / whisper / Piper).
+        # Off until the owner configures URLs; nothing external is called.
+        from .generative import Generative
+        self.generative = Generative(cfg, self.storage,
+                                     self.mind.agent_name, self.mind.owner_name)
+        if self.telegram.enabled:
+            self.generative.archive = self._archive_file
         self.executor.on_q_update = self.learner.q_update
         self.executor.state_builder = self._q_state
         self._msg_lock = threading.Lock()
@@ -95,6 +103,22 @@ class Agent:
         self._stop.set()
         if self._tick_thread:
             self._tick_thread.join(timeout=2.0)
+
+    def tick_if_due(self, force: bool = False) -> bool:
+        """Serverless autonomy: one thought, at most every
+        ``cfg.serverless_tick_seconds``. The "last tick" timestamp lives in
+        the database, so many function instances share one cadence."""
+        now = time.time()
+        last = float(self.storage.state_get("autonomy.last_tick", 0) or 0)
+        if not force and now - last < self.cfg.serverless_tick_seconds:
+            return False
+        self.storage.state_set("autonomy.last_tick", now)
+        try:
+            self.mind.tick(advance_goal_fn=self._advance_top_goal)
+        except Exception:  # noqa: BLE001
+            self.storage.count("errors", "tick")
+            return False
+        return True
 
     def _tick_loop(self) -> None:
         while not self._stop.wait(self.cfg.tick_seconds):
@@ -204,6 +228,32 @@ class Agent:
     def _parse(self, text: str) -> Dict[str, Any]:
         return parse_message(self.model, text, self._devices(),
                              self.learner.skill_names())
+
+    def _archive_file(self, name: str, data: bytes, mime: str,
+                      kind: str) -> Optional[str]:
+        """Send a generated file to the Telegram archive chat.
+
+        "Folders" = forum topics: REALAI_TG_ARCHIVE_TOPICS maps a kind
+        (image / slides / audio) to a message_thread_id. Without topics
+        the caption carries a #kind hashtag so Telegram search finds it.
+        """
+        cfg = self.cfg
+        topics: Dict[str, int] = {}
+        for part in (cfg.tg_archive_topics or "").split(","):
+            if ":" in part:
+                k, _, v = part.strip().partition(":")
+                if v.strip().isdigit():
+                    topics[k.strip()] = int(v.strip())
+        file_id = self.telegram.send_file(
+            name, data, mime, caption=f"#{kind} {name}",
+            chat_id=cfg.tg_archive_chat_id or None,
+            thread_id=topics.get(kind))
+        if file_id:
+            try:
+                self.storage.state_set(f"tg_file:{name}", file_id)
+            except Exception:  # noqa: BLE001
+                pass
+        return file_id
 
     def _q_state(self, req: "ActionRequest") -> str:
         return f"act|{req.category}"

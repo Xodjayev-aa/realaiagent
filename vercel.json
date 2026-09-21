@@ -8,11 +8,43 @@
     }
   },
   "rewrites": [
-    { "source": "/api/:rest*", "destination": "/api/:rest*" },
-    { "source": "/", "destination": "/api" },
-    { "source": "/webhook", "destination": "/api/webhook" },
-    { "source": "/dashboard", "destination": "/api/dashboard" },
-    { "source": "/stream/:topic", "destination": "/api/stream/:topic" },
-    { "source": "/:rest*", "destination": "/api/:rest*" }
+    {
+      "source": "/api/:rest*",
+      "destination": "/api/:rest*"
+    },
+    {
+      "source": "/",
+      "destination": "/api"
+    },
+    {
+      "source": "/webhook",
+      "destination": "/api/webhook"
+    },
+    {
+      "source": "/dashboard",
+      "destination": "/api/dashboard"
+    },
+    {
+      "source": "/cron/tick",
+      "destination": "/api/cron/tick"
+    },
+    {
+      "source": "/media/:name",
+      "destination": "/api/media/:name"
+    },
+    {
+      "source": "/stream/:topic",
+      "destination": "/api/stream/:topic"
+    },
+    {
+      "source": "/:rest*",
+      "destination": "/api/:rest*"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/tick",
+      "schedule": "*/10 * * * *"
+    }
   ]
 }

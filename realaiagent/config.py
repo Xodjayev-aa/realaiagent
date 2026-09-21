@@ -60,6 +60,11 @@ class Config:
     # the bot is in webhook mode (set via setWebhook). Empty = open
     # webhook (fine locally, do not leave open in production).
     telegram_webhook_secret: str = ""
+    # Archive every generated file (images, decks, audio) to a Telegram chat.
+    # Defaults to the owner chat; a forum supergroup + topic ids gives
+    # "folders": REALAI_TG_ARCHIVE_TOPICS="image:12,slides:13,audio:14".
+    tg_archive_chat_id: str = ""
+    tg_archive_topics: str = ""
 
     # Optional shared secret guarding /dashboard, /stream/* and the owner's
     # /approve inbox (passed as ?token=... or the X-Web-Token header).
@@ -96,6 +101,49 @@ class Config:
     # (with Last-Event-ID) and the stream continues gapless.
     sse_window: float = 20.0
 
+    # --- durable database (Turso / libSQL over HTTPS) ---------------------
+    # Empty = local SQLite file in data_dir (self-hosted). Set both to run
+    # on Vercel/serverless with state that survives cold starts. Talks the
+    # SQL-over-HTTP protocol with urllib - no driver package needed.
+    database_url: str = ""          # libsql://<db>-<org>.turso.io  (or https://)
+    database_token: str = ""        # turso db tokens create <db>
+
+    # Serverless autonomy: with no background thread, the agent "thinks"
+    # at most once per this many seconds, piggybacking on a request or a
+    # Vercel cron hitting GET /cron/tick.
+    serverless_tick_seconds: float = 60.0
+
+    # --- generative provider ---------------------------------------------
+    # "local"  : only the local backends below (Ollama, SD, whisper, Piper)
+    # "hosted" : a keyless public inference API (Pollinations.AI, no signup,
+    #            no key) for talk / images / voice, so the agent has ChatGPT-
+    #            style abilities on Vercel with no hardware. Local backends
+    #            still win when their URL is set. Anonymous tier is
+    #            rate-limited (~1 request / 15 s per IP); an optional token
+    #            from auth.pollinations.ai raises it - never required.
+    provider: str = "local"
+    hosted_text_url: str = "https://text.pollinations.ai"
+    hosted_image_url: str = "https://image.pollinations.ai"
+    hosted_text_model: str = "openai"
+    hosted_image_model: str = "flux"
+    hosted_voice: str = "nova"
+    hosted_token: str = ""
+    hosted_timeout: float = 60.0
+
+    # --- optional LOCAL generative backends (all off unless a URL is set) --
+    # These are servers running on YOUR machine: Ollama for fluent talk,
+    # Stable Diffusion WebUI (--api) for images, whisper.cpp server for
+    # speech-to-text, Piper for speech. No keys, nothing leaves the host.
+    llm_url: str = ""               # e.g. http://127.0.0.1:11434 (Ollama)
+    llm_model: str = "llama3.1:8b"
+    llm_timeout: float = 90.0
+    image_url: str = ""             # e.g. http://127.0.0.1:7860 (SD WebUI)
+    image_timeout: float = 180.0
+    stt_url: str = ""               # e.g. http://127.0.0.1:8178 (whisper.cpp)
+    tts_url: str = ""               # e.g. http://127.0.0.1:5000 (piper http)
+    tts_command: str = ""           # e.g. "piper --model en_US-lessac-medium.onnx"
+    media_ttl_hours: float = 24.0   # generated files older than this are pruned
+
     # Identity defaults
     agent_name: str = "REAL"
     owner_name: str = "Owner"
@@ -106,6 +154,11 @@ class Config:
         if not self.file_roots:
             self.file_roots = [self.data_dir]
         self.file_roots = [Path(p).expanduser().resolve() for p in self.file_roots]
+
+    @property
+    def media_dir(self) -> Path:
+        """Where generated images / audio / slide decks are written."""
+        return self.data_dir / "media"
 
     @property
     def db_path(self) -> Path:
@@ -155,8 +208,30 @@ class Config:
             autonomous_report_minutes=float(os.environ.get(
                 "REALAI_AUTONOMOUS_REPORT_MIN", "60")),
             agent_name=os.environ.get("REALAI_AGENT_NAME", "REAL"),
+            provider=os.environ.get("REALAI_PROVIDER", "local").strip().lower(),
+            hosted_text_model=os.environ.get("REALAI_HOSTED_TEXT_MODEL", "openai"),
+            hosted_image_model=os.environ.get("REALAI_HOSTED_IMAGE_MODEL", "flux"),
+            hosted_voice=os.environ.get("REALAI_HOSTED_VOICE", "nova"),
+            hosted_token=os.environ.get("REALAI_HOSTED_TOKEN", "").strip(),
+            hosted_timeout=float(os.environ.get("REALAI_HOSTED_TIMEOUT", "60")),
+            llm_url=os.environ.get("REALAI_LLM_URL", "").strip(),
+            llm_model=os.environ.get("REALAI_LLM_MODEL", "llama3.1:8b"),
+            llm_timeout=float(os.environ.get("REALAI_LLM_TIMEOUT", "90")),
+            image_url=os.environ.get("REALAI_IMAGE_URL", "").strip(),
+            stt_url=os.environ.get("REALAI_STT_URL", "").strip(),
+            tts_url=os.environ.get("REALAI_TTS_URL", "").strip(),
+            tts_command=os.environ.get("REALAI_TTS_COMMAND", "").strip(),
+            media_ttl_hours=float(os.environ.get("REALAI_MEDIA_TTL_HOURS", "24")),
             owner_name=os.environ.get("REALAI_OWNER_NAME", "Owner"),
             is_vercel=vercel,
+            database_url=(os.environ.get("REALAI_DATABASE_URL")
+                          or os.environ.get("TURSO_DATABASE_URL", "")).strip(),
+            database_token=(os.environ.get("REALAI_DATABASE_TOKEN")
+                            or os.environ.get("TURSO_AUTH_TOKEN", "")).strip(),
+            serverless_tick_seconds=float(os.environ.get(
+                "REALAI_SERVERLESS_TICK_SECONDS", "60")),
+            tg_archive_chat_id=os.environ.get("REALAI_TG_ARCHIVE_CHAT_ID", ""),
+            tg_archive_topics=os.environ.get("REALAI_TG_ARCHIVE_TOPICS", ""),
             telegram_webhook_secret=os.environ.get(
                 "REALAI_TELEGRAM_WEBHOOK_SECRET", ""),
             web_token=os.environ.get("REALAI_WEB_TOKEN", ""),
