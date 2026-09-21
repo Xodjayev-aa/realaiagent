@@ -522,6 +522,45 @@ Counters survive restarts (rebuilt from the ledger on boot).
    (/approve /deny /vip /topup …)       reports + security alerts
 ```
 
+## Talk, draw, speak, listen, present — locally (optional)
+
+The trainable core stays exactly as it is. On top of it, `realaiagent/generative.py`
+adds the *ChatGPT / Gemini-style* abilities, each wired to an **open model
+running on your own machine**. There is no way to copy ChatGPT's or
+Gemini's model into a repository — their weights are proprietary — but the
+product surface around them is reproducible with open engines. Every
+backend is **off until you set its URL**; with nothing set the agent keeps
+its honest "I cannot do that" answers. Still stdlib-only, still no keys.
+
+| ability | you run (locally) | set | how it shows up |
+|---|---|---|---|
+| fluent conversation | [Ollama](https://ollama.com) — `ollama run llama3.1:8b` | `REALAI_LLM_URL=http://127.0.0.1:11434` `REALAI_LLM_MODEL=llama3.1:8b` | any message the classifier doesn't map to a command is answered by the model, with the recent turns + your memories as context. `status`, `turn on…`, `teach:` etc. still go to the engine |
+| images | [Stable Diffusion WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui) started with `--api` | `REALAI_IMAGE_URL=http://127.0.0.1:7860` | "draw me a …", "make a picture of …" → the image appears in the chat bubble |
+| listen (mic) | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-server` | `REALAI_STT_URL=http://127.0.0.1:8178` | a 🎤 button appears in the web chat |
+| speak | [Piper](https://github.com/rhasspy/piper) HTTP server **or** CLI | `REALAI_TTS_URL=http://127.0.0.1:5000` or `REALAI_TTS_COMMAND="piper --model en_US-lessac-medium.onnx"` | 🔊 on every reply; "say: hello" in chat |
+| presentations | nothing — built-in `.pptx` writer (zipped OOXML) | — | "make a presentation about …" → downloadable deck; the outline is written by the local LLM when one is connected, a fillable skeleton otherwise |
+
+Generated files live in `data/media/`, are served at `/media/<name>`
+(strict name pattern, no traversal) and expire after
+`REALAI_MEDIA_TTL_HOURS` (24). Every generation is counted under the
+`generative` category in the ledger.
+
+API (owner-issued key, `chat` scope):
+
+```
+GET  /v1/generate/capabilities            what is switched on (public)
+POST /v1/generate/talk        {"messages":[{"role":"user","content":"…"}]}  or {"message":"…"}
+POST /v1/generate/image       {"prompt":"…","width":768,"height":768,"steps":25}
+POST /v1/generate/speak       {"text":"…"}                     → {"url":"/media/….wav"}
+POST /v1/generate/transcribe  {"audio":"<base64>","mime":"audio/webm"} → {"text":"…"}
+POST /v1/generate/slides      {"topic":"…","count":6}  or {"slides":[{"title":"…","bullets":["…"]}]}
+POST /public/transcribe, /public/speak   keyless, per-visitor rate-limited (used by the web chat)
+```
+
+Hardware: a 7–8B chat model wants ~8 GB RAM; Stable Diffusion wants a
+GPU to be quick. These do **not** run on Vercel's free tier — point the
+URLs at a machine you own.
+
 ## Optional: ReAct loop with a local LLM (`realai react`)
 
 `realaiagent/react.py` is a hand-written **Think ➔ Act ➔ Observe** loop —

@@ -181,6 +181,7 @@ class Config:
             stt_url=os.environ.get("REALAI_STT_URL", "").strip(),
             tts_url=os.environ.get("REALAI_TTS_URL", "").strip(),
             tts_command=os.environ.get("REALAI_TTS_COMMAND", "").strip(),
+            media_ttl_hours=float(os.environ.get("REALAI_MEDIA_TTL_HOURS", "24")),
             owner_name=os.environ.get("REALAI_OWNER_NAME", "Owner"),
             is_vercel=vercel,
             telegram_webhook_secret=os.environ.get(
