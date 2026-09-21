@@ -45,12 +45,24 @@ class UserManager:
         self.keys = keys
         self.cfg = cfg
         self.notifier = None  # set to a Telegram() by the Agent
+        self.mailer = None    # set to an EmailNotifier() by the Agent
+        # Optional absolute URL of the owner's web inbox, included in mail so
+        # an approval is one tap away from a phone.
+        self.approve_url = ""
 
     def _notify(self, text: str, dedup_key: str = "",
                 min_interval: float = 30.0) -> None:
         if self.notifier is not None:
             self.notifier.send(text, dedup_key=dedup_key,
                                min_interval=min_interval)
+
+    def _email(self, subject: str, body: str, dedup_key: str = "",
+               min_interval: float = 30.0) -> bool:
+        """Second owner channel. Never carries a plaintext API key."""
+        if self.mailer is None:
+            return False
+        return self.mailer.send(subject, body, dedup_key=dedup_key,
+                                min_interval=min_interval)
 
     # ------------------------------------------------------------ lifecycle
 
@@ -63,6 +75,24 @@ class UserManager:
         self._notify(
             f"🔔 New access request from '{username}'. "
             f"Approve: /approve {username}  ·  Deny: /deny {username}")
+        # ...and the same news by email, so it lands even with the phone
+        # face-down. The owner decides from Telegram OR the web inbox.
+        self._email(
+            f"[{self.cfg.agent_name}] access request: {username}",
+            "\n".join([
+                "Somebody asked for an API key.",
+                "",
+                f"  username : {username}",
+                f"  scopes   : {', '.join(user['requested_scopes'])}",
+                f"  status   : PENDING (no key exists yet)",
+                f"  their note: {note[:300] or '(none)'}",
+                "",
+                "Web inbox : " + (self.approve_url or "/approve"),
+                "Telegram  : /approve " + username + "  ·  /deny " + username,
+                "",
+                "The key is minted only when you approve, and shown once.",
+            ]),
+            dedup_key=f"request:{username}", min_interval=30.0)
         return user
 
     def approve(self, username: str, scopes: Optional[List[str]] = None,
@@ -87,6 +117,23 @@ class UserManager:
         out["api_key"] = plaintext
         out["key_id"] = key_id
         out["key_scopes"] = meta["scopes"]
+        # Audit trail by mail — deliberately WITHOUT the key: a plaintext
+        # secret must never sit in an inbox. It is shown once, to the owner.
+        self._email(
+            f"[{self.cfg.agent_name}] approved: {username}",
+            "\n".join([
+                f"You approved '{username}'.",
+                "",
+                f"  key id  : {key_id}",
+                f"  scopes  : {', '.join(meta['scopes'])}",
+                f"  limit   : {meta.get('request_limit') or 'unlimited'} "
+                f"requests",
+                "",
+                "The plaintext key was shown once, in the channel you "
+                "approved from. It is not stored anywhere recoverable and "
+                "it is never emailed.",
+            ]),
+            dedup_key=f"approved:{username}", min_interval=10.0)
         return out
 
     def deny(self, username: str, created_by: str = "owner") -> Dict[str, Any]:
@@ -100,6 +147,16 @@ class UserManager:
             self.keys.revoke(k["id"])
         self.storage.log_event("user_denied", {"username": username,
                                                "by": created_by})
+        self._email(
+            f"[{self.cfg.agent_name}] denied: {username}",
+            "\n".join([
+                f"You denied '{username}' — they are BANNED and every key "
+                f"issued to them was revoked.",
+                "",
+                "A banned key that tries the API is counted as a security "
+                "intrusion, and you will hear about it.",
+            ]),
+            dedup_key=f"denied:{username}", min_interval=10.0)
         return user
 
     def ban(self, username: str, created_by: str = "owner") -> Dict[str, Any]:

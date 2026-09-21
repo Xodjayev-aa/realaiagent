@@ -25,7 +25,7 @@ from string import Template
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from .engine import Agent
-from .api.server import _RateLimiter, dispatch, _serialize
+from .api.server import _RateLimiter, client_ip, dispatch, _serialize
 from .telegram import TelegramMaster
 
 #: The 15 SSE topics the web streams (each is ``GET /stream/<topic>``).
@@ -157,6 +157,65 @@ class SseHub:
             time.sleep(min(0.2, max(0.005, deadline - time.time())))
 
 
+class TokenGuard:
+    """Lockout for the web-token gated surfaces (``/approve``, ``/dashboard``,
+    ``/stream/*``).
+
+    A shared secret in a URL is only as strong as the number of guesses an
+    attacker gets, so wrong tokens are counted **per visitor** and the
+    visitor is locked out after a handful of failures. In-memory on purpose:
+    it is a speed bump for a browser-facing gate, and the durable record of
+    the attempt lives in the ledger (``security/web_token_denied``) plus an
+    intrusion event and a Telegram alert when a lockout trips.
+    """
+
+    def __init__(self, max_failures: int = 10, window_s: float = 600.0,
+                 lockout_s: float = 300.0) -> None:
+        self.max_failures = max(1, int(max_failures))
+        self.window_s = float(window_s)
+        self.lockout_s = float(lockout_s)
+        self._lock = threading.Lock()
+        # visitor -> [failure_count, first_failure_ts, locked_until]
+        self._state: Dict[str, List[float]] = {}
+
+    def blocked_for(self, visitor: str) -> float:
+        """Seconds left on a lockout, or 0 when the visitor may try."""
+        now = time.time()
+        with self._lock:
+            row = self._state.get(visitor)
+            if not row:
+                return 0.0
+            locked_until = row[2]
+            if locked_until > now:
+                return locked_until - now
+            if now - row[1] > self.window_s:
+                # the window rolled over: forget the old failures
+                self._state.pop(visitor, None)
+            return 0.0
+
+    def fail(self, visitor: str) -> bool:
+        """Record a wrong token. Returns True when this tripped a lockout."""
+        now = time.time()
+        with self._lock:
+            row = self._state.setdefault(visitor, [0.0, now, 0.0])
+            if now - row[1] > self.window_s:
+                row[0], row[1] = 0.0, now
+            row[0] += 1
+            if row[0] >= self.max_failures and row[2] <= now:
+                row[2] = now + self.lockout_s
+                row[0] = 0.0
+                return True
+            return False
+
+    def succeed(self, visitor: str) -> None:
+        with self._lock:
+            self._state.pop(visitor, None)
+
+    def visitors(self) -> int:
+        with self._lock:
+            return len(self._state)
+
+
 class WebApp:
     """One transport-agnostic app: API + dashboard + SSE + webhook."""
 
@@ -167,6 +226,7 @@ class WebApp:
         self.master = master
         self.limiter = _RateLimiter(agent.cfg.rate_limit_per_min,
                                     agent.cfg.rate_burst)
+        self.token_guard = TokenGuard()
 
     # ------------------------------------------------------------ handling
 
@@ -190,16 +250,21 @@ class WebApp:
             }
         if path == "/webhook" and method == "POST":
             return self._webhook(headers, raw_body)
+        if path in ("/logo.svg", "/favicon.ico"):
+            return self._asset(path)
+        if path == "/approve":
+            return self._approve(method, query, headers, raw_body)
         if path == "/stream" or path.startswith("/stream/"):
             return self._stream(path, query, headers)
         if path == "/dashboard":
-            return self._dashboard(query)
+            return self._dashboard(query, headers)
 
         status, ctype, body, extra = dispatch(
             self.agent, self.limiter, method, path, query, headers, raw_body)
 
         # feed the "plans" topic with every completed chat turn
-        if method == "POST" and path == "/v1/chat" and status == 200:
+        if method == "POST" and path in ("/v1/chat", "/public/chat") \
+                and status == 200:
             try:
                 meta = (json.loads(body).get("meta") or {})
                 self.hub.publish("plans", {
@@ -220,13 +285,59 @@ class WebApp:
         body, ctype = _serialize(payload)
         return status, ctype, body, {}
 
-    def _check_web_token(self, query: Dict[str, str],
-                         headers: Dict[str, str]) -> bool:
-        tok = self.agent.cfg.web_token
-        if not tok:
-            return True
-        return (query.get("token") == tok
-                or headers.get("x-web-token") == tok)
+    def _web_gate(self, query: Dict[str, str], headers: Dict[str, str],
+                  surface: str) -> Tuple[bool, str, int]:
+        """Decide whether a web-token gated surface may be served.
+
+        Returns ``(allowed, reason, retry_after_seconds)`` where ``reason`` is
+        ``""`` (allowed), ``"denied"`` (wrong/missing token) or ``"locked"``
+        (too many wrong tokens from this visitor).
+
+        The token is accepted **only** as ``?token=`` or the ``X-Web-Token``
+        header — never from a request body. A body-borne secret would let a
+        cross-site form forge a state-changing POST; a custom header cannot
+        be set by a plain HTML form at all.
+        """
+        visitor = client_ip(headers) or "local"
+        retry = self.token_guard.blocked_for(visitor)
+        if retry > 0:
+            self.agent.storage.count("security", "web_token_lockout",
+                                     detail={"surface": surface})
+            return False, "locked", int(retry) + 1
+
+        expected = (self.agent.cfg.web_token or "").strip()
+        given = str(query.get("token") or headers.get("x-web-token") or "")
+        if not expected or given == expected:
+            self.token_guard.succeed(visitor)
+            return True, "", 0
+
+        tripped = self.token_guard.fail(visitor)
+        self.agent.storage.count("security", "web_token_denied",
+                                 detail={"surface": surface})
+        if tripped:
+            self.agent.storage.log_event("intrusion", {
+                "reason": "web_token_bruteforce", "surface": surface,
+                "visitor": visitor})
+            self.agent.telegram.send(
+                f"🚨 [Security] repeated wrong web tokens on {surface} from "
+                f"{visitor} - that visitor is locked out for "
+                f"{int(self.token_guard.lockout_s)}s",
+                dedup_key="intrusion-web-token", min_interval=300)
+        return False, "denied", 0
+
+    def _refusal(self, reason: str, retry: int,
+                 surface: str) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """The JSON refusal for a gated surface (401, or 429 when locked)."""
+        if reason == "locked":
+            status, ctype, body, extra = self._json(429, {"error": {
+                "code": "too_many_attempts",
+                "message": f"too many wrong web tokens for {surface} - "
+                           f"try again in {retry}s"}})
+            extra = dict(extra, **{"Retry-After": str(max(1, retry))})
+            return status, ctype, body, extra
+        return self._json(401, {"error": {
+            "code": "unauthorized",
+            "message": "web token required (set REALAI_WEB_TOKEN)"}})
 
     def _status_snapshot(self) -> Dict[str, Any]:
         snap = self.agent.mind.snapshot()
@@ -254,10 +365,9 @@ class WebApp:
     def _stream(self, path: str, query: Dict[str, str],
                 headers: Dict[str, str]) -> Tuple[int, str, bytes,
                                                   Dict[str, str]]:
-        if not self._check_web_token(query, headers):
-            return self._json(401, {"error": {
-                "code": "unauthorized",
-                "message": "web token required (set REALAI_WEB_TOKEN)"}})
+        allowed, reason, retry = self._web_gate(query, headers, "stream")
+        if not allowed:
+            return self._refusal(reason, retry, "/stream")
 
         topic = "" if path == "/stream" else path[len("/stream/"):]
         if not topic:
@@ -384,12 +494,13 @@ class WebApp:
 
     # ----------------------------------------------------------- dashboard
 
-    def _dashboard(self, query: Dict[str, str]) -> Tuple[int, str, bytes,
-                                                         Dict[str, str]]:
-        if not self._check_web_token(query, {}):
-            return self._json(401, {"error": {
-                "code": "unauthorized",
-                "message": "web token required (set REALAI_WEB_TOKEN)"}})
+    def _dashboard(self, query: Dict[str, str],
+                   headers: Optional[Dict[str, str]] = None
+                   ) -> Tuple[int, str, bytes, Dict[str, str]]:
+        allowed, reason, retry = self._web_gate(query, headers or {},
+                                                "dashboard")
+        if not allowed:
+            return self._refusal(reason, retry, "/dashboard")
         snap = self.agent.mind.snapshot()
         topics_js = json.dumps(
             [{"name": n, "description": d} for n, d in TOPICS])
@@ -398,6 +509,178 @@ class WebApp:
             token=self.agent.cfg.web_token)
         body = html.encode("utf-8")
         return 200, "text/html; charset=utf-8", body, {}
+
+
+    # ---------------------------------------------------------- brand assets
+
+    def _asset(self, path: str) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """``/logo.svg`` and ``/favicon.ico``: our own generated SVG mark.
+
+        No external asset is ever fetched, embedded or linked — the browser
+        gets bytes this repo produced.
+        """
+        from . import web_pages
+        body = web_pages.favicon_bytes(self.agent.mind.agent_name)
+        self.agent.storage.count("requests", "asset",
+                                 detail={"path": path})
+        return 200, "image/svg+xml", body, {
+            "Cache-Control": "public, max-age=3600",
+        }
+
+    # --------------------------------------------------------- owner inbox
+
+    def _approve(self, method: str, query: Dict[str, str],
+                 headers: Dict[str, str],
+                 raw_body: bytes) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """``/approve`` — the owner's approval inbox, web-token gated.
+
+        Same gate as ``/dashboard`` and ``/stream/*``, enforced by
+        :meth:`_web_gate`: with ``REALAI_WEB_TOKEN`` set the token must
+        arrive as ``?token=`` or the ``X-Web-Token`` header — never in the
+        body — and repeated wrong tokens lock the visitor out with a 429.
+        Without it configured the inbox is open, and says so loudly at the
+        top of the page.
+        """
+        from . import web_pages
+        agent = self.agent
+        method = (method or "GET").upper()
+
+        # Gate before anything else is parsed: a locked-out visitor should
+        # not even get to probe the JSON decoder.
+        allowed, reason, retry = self._web_gate(query, headers, "approve")
+        if not allowed:
+            agent.storage.count("security", "approve_unauthorized")
+            if reason == "locked":
+                if method == "GET" and "text/html" in str(
+                        headers.get("accept", "")):
+                    return self._locked_page(retry)
+                return self._refusal(reason, retry, "/approve")
+            if method == "GET" and "text/html" in str(
+                    headers.get("accept", "")):
+                return self._token_gate()
+            return self._json(401, {"error": {
+                "code": "unauthorized",
+                "message": "web token required (set REALAI_WEB_TOKEN, then "
+                           "open /approve?token=<token>)"}})
+
+        token = str(query.get("token") or headers.get("x-web-token") or "")
+        payload: Dict[str, Any] = {}
+        if raw_body and method == "POST":
+            try:
+                parsed = json.loads(raw_body.decode("utf-8"))
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except (ValueError, UnicodeDecodeError):
+                return self._json(400, {"error": {
+                    "code": "bad_json", "message": "invalid JSON body"}})
+
+        if method == "POST":
+            return self._approve_action(payload)
+        if method != "GET":
+            return self._json(405, {"error": {
+                "code": "method_not_allowed",
+                "message": "use GET (the inbox) or POST (a decision)"}})
+
+        page = web_pages.approve_page(agent, token=token)
+        return 200, "text/html; charset=utf-8", page.encode("utf-8"), {
+            "Cache-Control": "no-store",
+        }
+
+    def _locked_page(self, retry: int) -> Tuple[int, str, bytes,
+                                                 Dict[str, str]]:
+        """HTML 429 — shown when a locked-out visitor reloads /approve."""
+        from . import web_pages
+        page = web_pages.locked_page(retry)
+        return (429, "text/html; charset=utf-8", page.encode("utf-8"),
+                {"Cache-Control": "no-store", "Retry-After": str(retry)})
+
+    def _approve_action(self, payload: Dict[str, Any]
+                        ) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """One tap in the inbox: approve / deny / unban / vip."""
+        agent = self.agent
+        action = str(payload.get("action", "")).strip().lower()
+        username = str(payload.get("username", "")).strip().lower()
+        if action not in ("approve", "deny", "unban", "vip"):
+            return self._json(400, {"error": {
+                "code": "bad_request",
+                "message": "action must be approve|deny|unban|vip"}})
+        if not username or len(username) > 48:
+            return self._json(400, {"error": {
+                "code": "bad_request",
+                "message": "username (1-48 chars) is required"}})
+
+        users = agent.users
+        try:
+            if action == "approve":
+                out = users.approve(username, created_by="owner-web")
+                # The key is returned once, to the gated page, and is never
+                # written to the ledger or mailed anywhere.
+                return self._json(200, {
+                    "ok": True, "action": action, "username": username,
+                    "status": out.get("status"),
+                    "api_key": out["api_key"], "key_id": out["key_id"],
+                    "key_scopes": out["key_scopes"],
+                    "message": "approved - copy the key now, it is shown "
+                               "exactly once",
+                })
+            if action == "deny":
+                row = users.deny(username, created_by="owner-web")
+                message = "denied and banned; their keys were revoked"
+            elif action == "unban":
+                row = users.unban(username, created_by="owner-web")
+                message = "unbanned - they are PENDING again and still need " \
+                          "an approval to get a key"
+            else:
+                vip = bool(payload.get("vip", True))
+                row = users.set_vip(username, vip)
+                message = ("VIP: requests are free" if vip
+                           else "VIP removed: per-request billing resumes")
+        except KeyError:
+            return self._json(404, {"error": {
+                "code": "not_found", "message": f"user {username} not found"}})
+
+        agent.storage.count("users", f"web_{action}")
+        agent.storage.log_event("user_status", {
+            "username": username, "status": (row or {}).get("status"),
+            "by": "owner-web", "action": action})
+        return self._json(200, {
+            "ok": True, "action": action, "username": username,
+            "status": (row or {}).get("status"),
+            "is_vip": bool((row or {}).get("is_vip")),
+            "message": message,
+        })
+
+    def _token_gate(self) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """A browser-friendly 401: enter the web token, then see the inbox."""
+        html = (
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,"
+            "initial-scale=1\"><title>Approvals — token required</title>"
+            "<style>body{background:#0b0e14;color:#d7dce5;margin:0;"
+            "font:15px/1.6 ui-sans-serif,system-ui,sans-serif;"
+            "display:flex;align-items:center;justify-content:center;"
+            "min-height:100vh}form{background:#12161f;border:1px solid "
+            "#1f2633;border-radius:14px;padding:22px;max-width:420px;"
+            "width:calc(100% - 40px)}h1{font-size:19px;margin:0 0 6px}"
+            "p{color:#8b94a7;font-size:13.5px;margin:0 0 14px}"
+            "input{width:100%;background:#0e1219;color:#d7dce5;border:1px "
+            "solid #1f2633;border-radius:10px;padding:10px 12px;font:inherit;"
+            "box-sizing:border-box}button{margin-top:12px;width:100%;"
+            "background:#1d2a44;color:#fff;border:1px solid #7aa2f7;"
+            "border-radius:10px;padding:10px;font:inherit;cursor:pointer}"
+            "a{color:#7aa2f7}</style></head><body>"
+            "<form method=\"get\" action=\"/approve\">"
+            "<h1>Owner approval inbox</h1>"
+            "<p>This page is gated by <code>REALAI_WEB_TOKEN</code>. Enter it "
+            "to continue — the token stays in the URL of your own browser "
+            "and is never stored by the agent.</p>"
+            "<input name=\"token\" type=\"password\" autofocus "
+            "placeholder=\"web token\" autocomplete=\"off\">"
+            "<button type=\"submit\">Open the inbox</button>"
+            "<p style=\"margin-top:14px\"><a href=\"/\">← back to the chat "
+            "app</a></p></form></body></html>")
+        return 401, "text/html; charset=utf-8", html.encode("utf-8"), {
+            "Cache-Control": "no-store"}
 
 
 def _int_or(raw: Any, default: int) -> int:

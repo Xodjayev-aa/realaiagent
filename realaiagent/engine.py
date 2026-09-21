@@ -26,6 +26,8 @@ from .actions.executor import ActionExecutor
 from .actions.permissions import PermissionManager
 from .api.auth import KeyManager
 from .config import Config
+from .conversation import ConversationManager
+from .email import EmailNotifier
 from .learning import Learner
 from .mind import Mind
 from .nlp import IntentModel, parse_message
@@ -54,6 +56,13 @@ class Agent:
         self.telegram = Telegram(cfg.telegram_bot_token,
                                  cfg.telegram_chat_id, self.storage)
         self.users.notifier = self.telegram
+        # The owner hears about access requests on BOTH channels: their own
+        # Telegram bot and their own SMTP inbox (stdlib, no mail SaaS).
+        self.mailer = EmailNotifier.from_config(cfg, self.storage)
+        self.users.mailer = self.mailer
+        # The product's voice: multi-turn context, memory recall, honest
+        # scope. The pipeline above stays exactly as it was for API clients.
+        self.conversation = ConversationManager(self)
         self.executor.on_q_update = self.learner.q_update
         self.executor.state_builder = self._q_state
         self._msg_lock = threading.Lock()
@@ -174,6 +183,23 @@ class Agent:
                     "duration_ms": round(duration, 1),
                 },
             }
+
+    # ------------------------------------------------------- conversation
+
+    def reply(self, text: str, session_id: Optional[str] = None,
+              sender: str = "web", scopes: Optional[List[str]] = None,
+              key_id: Optional[str] = None,
+              visitor: str = "") -> Dict[str, Any]:
+        """Talk to the agent the way the web app does.
+
+        Same pipeline as :meth:`handle_message`, wrapped in the
+        conversational voice: multi-turn context for this ``session_id``,
+        memory recall, and honest scope. ``handle_message`` stays raw for
+        API clients that want the pipeline's own words.
+        """
+        return self.conversation.reply(
+            text, session_id=session_id, sender=sender, scopes=scopes,
+            key_id=key_id, visitor=visitor)
 
     def _parse(self, text: str) -> Dict[str, Any]:
         return parse_message(self.model, text, self._devices(),
