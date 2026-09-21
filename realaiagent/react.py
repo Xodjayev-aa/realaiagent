@@ -117,6 +117,27 @@ class ToolRegistry:
     def register(self, name: str, fn: Callable[[Dict[str, Any]], str]) -> None:
         self._tools[name] = fn
 
+    def add_generative(self, gen: Any) -> None:
+        """Expose the local generative layer (images / voice / slides)."""
+        def _img(a: Dict[str, Any]) -> str:
+            r = gen.image(str(a.get("prompt", "")))
+            return f"Success: image saved at {r.url}" if r.ok else f"Error: {r.error}"
+
+        def _slides(a: Dict[str, Any]) -> str:
+            r = gen.presentation(str(a.get("topic", "")), slides=a.get("slides"),
+                                 count=int(a.get("count", 6)))
+            return f"Success: deck saved at {r.url}\n{r.text}" if r.ok else f"Error: {r.error}"
+
+        def _speak(a: Dict[str, Any]) -> str:
+            r = gen.speak(str(a.get("text", "")))
+            return f"Success: audio saved at {r.url}" if r.ok else f"Error: {r.error}"
+
+        if gen.can_draw:
+            self.register("generate_image", _img)
+        if gen.can_speak:
+            self.register("speak", _speak)
+        self.register("make_presentation", _slides)
+
     @property
     def names(self) -> List[str]:
         return sorted(self._tools)

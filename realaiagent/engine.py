@@ -63,6 +63,11 @@ class Agent:
         # The product's voice: multi-turn context, memory recall, honest
         # scope. The pipeline above stays exactly as it was for API clients.
         self.conversation = ConversationManager(self)
+        # Optional local generative backends (Ollama / SD / whisper / Piper).
+        # Off until the owner configures URLs; nothing external is called.
+        from .generative import Generative
+        self.generative = Generative(cfg, self.storage,
+                                     self.mind.agent_name, self.mind.owner_name)
         self.executor.on_q_update = self.learner.q_update
         self.executor.state_builder = self._q_state
         self._msg_lock = threading.Lock()

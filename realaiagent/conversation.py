@@ -127,8 +127,11 @@ SCOPE_ANSWERS: Dict[str, str] = {
         "phrasing with `teach: \"<sentence>\" means <intent>` and I get "
         "better at understanding you specifically."),
     "media generation": (
-        "I cannot make images, audio or video — I have no generative model "
-        "and no renderer, only text and actions. What I can do is act: "
+        "I cannot make images, audio or video right now — my owner has not "
+        "connected a local generative model. I can once they run Stable "
+        "Diffusion (images) or Piper (voice) on this machine and point me "
+        "at it — nothing external, still no keys. What I can do today is "
+        "build a presentation (.pptx) and act: "
         "switch a registered device on or off, run a command my owner "
         "allows, read or write a file inside the roots I am given, and "
         "learn a multi-step skill from something that worked. Each of "
@@ -307,6 +310,8 @@ class ConversationManager:
             "context": extra.get("context", {"turn": sess.turn_count,
                                              "resolved": False}),
             "recall": extra.get("recall", []),
+            "attachments": extra.get("attachments", []),
+            "generation": extra.get("generation"),
             "voice": True,
             "duration_ms": round((time.time() - t0) * 1000, 1),
         }
@@ -324,6 +329,10 @@ class ConversationManager:
         if not raw:
             return ("I did not get a message there — say something and I "
                     "will answer.", "chat", 0.0, {})
+
+        media = self._media_request(raw, sess, sender)
+        if media is not None:
+            return media
 
         scope = self._out_of_scope(raw)
         if scope:
@@ -351,6 +360,9 @@ class ConversationManager:
         answer = self._voice(result.get("response", ""), intent, sess,
                              recalled, context,
                              is_owner="owner" in (scopes or []))
+        llm = self._llm_fallback(raw, sess, meta, result.get("response", ""))
+        if llm is not None:
+            answer, intent = llm, "talk"
         return answer, intent, meta.get("confidence", 0.0), {
             "top_k": meta.get("top_k", []),
             "plan": meta.get("plan", {}),
@@ -373,6 +385,128 @@ class ConversationManager:
             self.agent.storage.count("errors", "session_persist")
 
     # ------------------------------------------------------- 1. honesty
+
+    # ------------------------------------------------- generative abilities
+
+    _IMAGE_RE = re.compile(
+        r"^(?:please\s+)?(?:can you\s+|could you\s+)?"
+        r"(?:draw|paint|sketch|illustrate|generate|create|make|render|imagine)"
+        r"\s+(?:me\s+)?(?:an?\s+|the\s+)?"
+        r"(?:image|picture|photo|illustration|drawing|painting|logo|artwork|"
+        r"poster|icon|wallpaper)?\s*(?:of|about|showing|with|for|:)?\s*(?P<what>.+)$",
+        re.IGNORECASE)
+    _DRAW_WORDS = ("draw", "paint", "sketch", "illustrat", "image", "picture",
+                   "photo", "logo", "poster", "wallpaper", "icon", "artwork",
+                   "render", "imagine")
+    _SLIDES_RE = re.compile(
+        r"(?:presentation|slides?|slide deck|deck|pptx|powerpoint|keynote)"
+        r"\s*(?:on|about|for|of|:)?\s*(?P<what>.+)$", re.IGNORECASE)
+    _SPEAK_RE = re.compile(
+        r"^(?:please\s+)?(?:say|speak|read (?:this |it )?(?:aloud|out loud)|"
+        r"say (?:this |it )?(?:aloud|out loud)|talk)\s*:?\s*(?P<what>.*)$",
+        re.IGNORECASE)
+
+    def _media_request(self, raw: str, sess: Session,
+                       sender: str) -> Optional[Tuple[str, str, float,
+                                                      Dict[str, Any]]]:
+        """Image / presentation / voice requests → the generative layer.
+
+        Returns ``None`` when the message is not such a request, or when
+        the needed backend is not configured (the honest scope answer
+        then handles it, exactly as before).
+        """
+        gen = getattr(self.agent, "generative", None)
+        if gen is None:
+            return None
+        t = raw.strip()
+        low = t.lower()
+
+        m = self._SLIDES_RE.search(t)
+        if m and any(w in low for w in ("make", "create", "build", "prepare",
+                                        "generate", "write", "presentation",
+                                        "deck", "pptx", "powerpoint")):
+            topic = m.group("what").strip(" .!?\"'")
+            n = re.search(r"(\d{1,2})[- ]slide", low)
+            res = gen.presentation(topic, count=int(n.group(1)) if n else 6)
+            self.agent.storage.count("chat", "media_slides")
+            if not res.ok:
+                return (f"I tried to build that deck but could not: {res.error}",
+                        "slides", 0.9, {"generation": res.to_dict()})
+            how = ("written by my local language model" if res.meta.get("outline")
+                   == "llm" else "a structured skeleton you can fill in — "
+                   "connect a local language model and I will write the "
+                   "content too")
+            return (f"Here is your presentation on **{topic}** "
+                    f"({res.meta['slides']} slides, {how}):\n\n{res.text}\n\n"
+                    f"[Download the .pptx]({res.url})",
+                    "slides", 0.9, {"generation": res.to_dict(),
+                                    "attachments": [{"kind": "file",
+                                                     "url": res.url,
+                                                     "mime": res.mime,
+                                                     "name": "presentation.pptx"}]})
+
+        m = self._IMAGE_RE.match(t)
+        if m and any(w in low for w in self._DRAW_WORDS):
+            if not gen.can_draw:
+                return None       # fall through to the honest scope answer
+            what = m.group("what").strip(" .!?\"'")
+            res = gen.image(what)
+            self.agent.storage.count("chat", "media_image")
+            if not res.ok:
+                return (f"I tried to draw that but could not: {res.error}",
+                        "image", 0.9, {"generation": res.to_dict()})
+            return (f"Here is what I made for *{what}*:\n\n![{what}]({res.url})",
+                    "image", 0.9, {"generation": res.to_dict(),
+                                   "attachments": [{"kind": "image",
+                                                    "url": res.url,
+                                                    "mime": res.mime}]})
+
+        m = self._SPEAK_RE.match(t)
+        if m and m.group("what").strip() and gen.can_speak:
+            what = m.group("what").strip(" \"'")
+            res = gen.speak(what)
+            self.agent.storage.count("chat", "media_speak")
+            if not res.ok:
+                return (f"I could not voice that: {res.error}", "speak", 0.9,
+                        {"generation": res.to_dict()})
+            return (f"🔊 *{what}*", "speak", 0.9,
+                    {"generation": res.to_dict(),
+                     "attachments": [{"kind": "audio", "url": res.url,
+                                      "mime": res.mime}]})
+        return None
+
+    def _llm_fallback(self, raw: str, sess: Session, meta: Dict[str, Any],
+                      engine_text: str) -> Optional[str]:
+        """When the trainable classifier did not understand and a local
+        language model is configured, let the model talk — with the recent
+        turns as context. The engine still handled every real command."""
+        gen = getattr(self.agent, "generative", None)
+        if gen is None or not gen.can_talk:
+            return None
+        intent = meta.get("intent", "chat")
+        # Only where the engine had nothing specific to say: the generic
+        # "chat" reply or its explicit "I'm not sure" fallback. Commands,
+        # status, teaching, goals and permissions stay with the engine.
+        unsure = ("I'm not sure what you'd like me to do there" in engine_text
+                  or intent in ("chat", "unknown"))
+        if not unsure:
+            return None
+        history: List[Dict[str, str]] = []
+        for turn in list(sess.turns)[-6:]:
+            history.append({"role": "user", "content": turn.get("message", "")})
+            history.append({"role": "assistant", "content": turn.get("response", "")})
+        history.append({"role": "user", "content": raw})
+        facts = self._recall(raw)
+        system = gen.PERSONA.format(name=gen.agent_name, owner=gen.owner_name)
+        if facts:
+            system += " Things the user told you earlier (your own memory): " \
+                      + "; ".join(facts)
+        res = gen.chat(history, system=system)
+        if not res.ok:
+            self.agent.storage.count("chat", "talk_unavailable")
+            return None
+        self.agent.storage.count("chat", "talk")
+        return res.text
 
     def _out_of_scope(self, text: str) -> Optional[str]:
         t = normalize(text)

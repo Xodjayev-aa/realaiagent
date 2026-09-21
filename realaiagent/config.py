@@ -96,6 +96,20 @@ class Config:
     # (with Last-Event-ID) and the stream continues gapless.
     sse_window: float = 20.0
 
+    # --- optional LOCAL generative backends (all off unless a URL is set) --
+    # These are servers running on YOUR machine: Ollama for fluent talk,
+    # Stable Diffusion WebUI (--api) for images, whisper.cpp server for
+    # speech-to-text, Piper for speech. No keys, nothing leaves the host.
+    llm_url: str = ""               # e.g. http://127.0.0.1:11434 (Ollama)
+    llm_model: str = "llama3.1:8b"
+    llm_timeout: float = 90.0
+    image_url: str = ""             # e.g. http://127.0.0.1:7860 (SD WebUI)
+    image_timeout: float = 180.0
+    stt_url: str = ""               # e.g. http://127.0.0.1:8178 (whisper.cpp)
+    tts_url: str = ""               # e.g. http://127.0.0.1:5000 (piper http)
+    tts_command: str = ""           # e.g. "piper --model en_US-lessac-medium.onnx"
+    media_ttl_hours: float = 24.0   # generated files older than this are pruned
+
     # Identity defaults
     agent_name: str = "REAL"
     owner_name: str = "Owner"
@@ -106,6 +120,11 @@ class Config:
         if not self.file_roots:
             self.file_roots = [self.data_dir]
         self.file_roots = [Path(p).expanduser().resolve() for p in self.file_roots]
+
+    @property
+    def media_dir(self) -> Path:
+        """Where generated images / audio / slide decks are written."""
+        return self.data_dir / "media"
 
     @property
     def db_path(self) -> Path:
@@ -155,6 +174,13 @@ class Config:
             autonomous_report_minutes=float(os.environ.get(
                 "REALAI_AUTONOMOUS_REPORT_MIN", "60")),
             agent_name=os.environ.get("REALAI_AGENT_NAME", "REAL"),
+            llm_url=os.environ.get("REALAI_LLM_URL", "").strip(),
+            llm_model=os.environ.get("REALAI_LLM_MODEL", "llama3.1:8b"),
+            llm_timeout=float(os.environ.get("REALAI_LLM_TIMEOUT", "90")),
+            image_url=os.environ.get("REALAI_IMAGE_URL", "").strip(),
+            stt_url=os.environ.get("REALAI_STT_URL", "").strip(),
+            tts_url=os.environ.get("REALAI_TTS_URL", "").strip(),
+            tts_command=os.environ.get("REALAI_TTS_COMMAND", "").strip(),
             owner_name=os.environ.get("REALAI_OWNER_NAME", "Owner"),
             is_vercel=vercel,
             telegram_webhook_secret=os.environ.get(

@@ -252,6 +252,8 @@ class WebApp:
             return self._webhook(headers, raw_body)
         if path in ("/logo.svg", "/favicon.ico"):
             return self._asset(path)
+        if path.startswith("/media/") and method == "GET":
+            return self._media(path[len("/media/"):])
         if path == "/approve":
             return self._approve(method, query, headers, raw_body)
         if path == "/stream" or path.startswith("/stream/"):
@@ -526,6 +528,29 @@ class WebApp:
         return 200, "image/svg+xml", body, {
             "Cache-Control": "public, max-age=3600",
         }
+
+    def _media(self, name: str) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """``/media/<file>`` — images, audio and decks the agent generated.
+
+        Only files the generative layer itself wrote (strict name pattern,
+        inside ``data/media``) are served; they expire after
+        ``media_ttl_hours``.
+        """
+        gen = getattr(self.agent, "generative", None)
+        path = gen.resolve_media(name) if gen is not None else None
+        if path is None:
+            return 404, "application/json", json.dumps({"error": {
+                "code": "not_found", "message": "no such media"}}).encode(), {}
+        mime = {"png": "image/png", "jpg": "image/jpeg", "wav": "audio/wav",
+                "md": "text/markdown; charset=utf-8",
+                "pptx": "application/vnd.openxmlformats-officedocument."
+                        "presentationml.presentation"}[path.suffix[1:]]
+        headers = {"Cache-Control": "private, max-age=3600"}
+        if path.suffix == ".pptx":
+            headers["Content-Disposition"] = \
+                f'attachment; filename="{self.agent.mind.agent_name}-presentation.pptx"'
+        self.agent.storage.count("requests", "media", detail={"name": name})
+        return 200, mime, path.read_bytes(), headers
 
     # --------------------------------------------------------- owner inbox
 
