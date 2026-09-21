@@ -14,3 +14,8 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# secrets
+.env
+.env.local
+.vercel/

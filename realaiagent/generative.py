@@ -184,12 +184,43 @@ class Generative:
                 pass
         return n
 
+    _NAME_RE = re.compile(r"[0-9]+-[0-9a-f]{10}\.(png|jpg|wav|pptx|md)")
+    _MIMES = {"png": "image/png", "jpg": "image/jpeg", "wav": "audio/wav",
+              "md": "text/markdown; charset=utf-8",
+              "pptx": "application/vnd.openxmlformats-officedocument."
+                      "presentationml.presentation"}
+
     def resolve_media(self, name: str) -> Optional[Path]:
-        """Safe lookup for ``/media/<name>`` (no traversal)."""
-        if not re.fullmatch(r"[0-9]+-[0-9a-f]{10}\.(png|jpg|wav|pptx|md)", name):
+        """Safe lookup for ``/media/<name>`` on disk (no traversal)."""
+        if not self._NAME_RE.fullmatch(name):
             return None
         p = self.media_dir / name
         return p if p.is_file() else None
+
+    def fetch_media(self, name: str) -> Optional[Dict[str, Any]]:
+        """``{"mime", "data"}`` for a generated file — from disk, or from
+        the database when the deploy is serverless (ephemeral disk)."""
+        p = self.resolve_media(name)
+        if p is not None:
+            return {"mime": self._MIMES[p.suffix[1:]], "data": p.read_bytes()}
+        if self.storage is not None and self._NAME_RE.fullmatch(name):
+            try:
+                return self.storage.media_get(name)
+            except Exception:  # noqa: BLE001
+                return None
+        return None
+
+    def _persist(self, path: Path) -> None:
+        """Mirror a generated file into the database when storage is remote,
+        and prune old rows, so /media works across serverless instances."""
+        st = self.storage
+        if st is None or not getattr(st, "remote", False):
+            return
+        try:
+            st.media_put(path.name, self._MIMES[path.suffix[1:]], path.read_bytes())
+            st.media_prune(self.cfg.media_ttl_hours * 3600)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------- talk
     def chat(self, messages: Messages, system: Optional[str] = None,
@@ -287,6 +318,7 @@ class Generative:
                              ms=(time.time() - t0) * 1000)
         path = self._new_file("png")
         path.write_bytes(raw)
+        self._persist(path)
         self._count("image", bytes=len(raw))
         return GenResult(True, text=prompt, path=path, url=self._url_for(path),
                          mime="image/png", ms=(time.time() - t0) * 1000,
@@ -351,6 +383,7 @@ class Generative:
                              ms=(time.time() - t0) * 1000)
         path = self._new_file("wav")
         path.write_bytes(wav)
+        self._persist(path)
         self._count("speak", chars=len(text))
         return GenResult(True, text=text, path=path, url=self._url_for(path),
                          mime="audio/wav", ms=(time.time() - t0) * 1000)
@@ -378,6 +411,7 @@ class Generative:
         try:
             write_pptx(path, topic or slides[0]["title"], slides,
                        author=self.agent_name)
+            self._persist(path)
         except Exception as exc:  # noqa: BLE001
             self._count("slides_error")
             return GenResult(False, error=f"pptx writer failed: {exc}")

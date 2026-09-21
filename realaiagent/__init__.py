@@ -14,7 +14,7 @@ A fully local, owner-controlled cognitive AI agent.
 - 0.3.0: a live web layer (dashboard + 15 SSE streams), a Vercel
   serverless handler (free tier, /tmp storage, Telegram webhook mode)
   and the same-repo Telegram master control - all still pure stdlib.
-- 0.4.0: it became a product a stranger can use. A conversational voice
+- 0.5.0: it became a product a stranger can use. A conversational voice
   with multi-turn context and durable per-session memory, a keyless demo
   chat with per-visitor rate limits, an owner approval inbox that mints
   keys one tap at a time (web-token gated, brute-force locked, alerted on
@@ -27,6 +27,6 @@ third-party packages. The agent is 100% the owner's code.
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = ["__version__"]

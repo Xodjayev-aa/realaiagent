@@ -599,7 +599,77 @@ drive the loop with a scripted model and need no server.
 
 ## Deployment (keeping it stable & safe, per your plan)
 
-### Vercel (free tier) — 0.3.0
+### Vercel + Turso (free tiers) — 0.5.0, the recommended way
+
+This is the "runs fully on the internet, keeps its memory" setup. Vercel
+runs the code; **Turso** (hosted SQLite / libSQL) holds *every* piece of
+state — owner key, hashing pepper, users, keys, memories, the trained
+intent model, goals, counters, generated decks. Without a database a
+Vercel function forgets everything on each cold start; with Turso it
+does not, and every function instance in every region sees the same
+brain. The driver is `realaiagent/libsql_http.py`: Turso's SQL-over-HTTP
+protocol spoken with `urllib`, so the deploy still has **zero
+dependencies**.
+
+```bash
+# 1. database (once)
+curl -sSfL https://get.tur.so/install.sh | bash
+turso auth signup                       # or: turso auth login
+turso db create realai
+turso db show realai --url              # libsql://realai-<you>.turso.io
+turso db tokens create realai           # eyJ...
+
+# 2. deploy
+npm i -g vercel && vercel link
+vercel env add REALAI_DATABASE_URL      # paste the libsql:// url
+vercel env add REALAI_DATABASE_TOKEN    # paste the token
+vercel env add REALAI_WEB_TOKEN         # any long random string (gates /dashboard, /approve, /cron/tick)
+vercel env add CRON_SECRET              # any long random string (Vercel Cron auth)
+vercel --prod
+
+# 3. your owner key (read from the shared database - the same one Vercel uses)
+export REALAI_DATABASE_URL=libsql://realai-<you>.turso.io REALAI_DATABASE_TOKEN=eyJ...
+python -m realaiagent db-check          # "connected ... schema ok"
+python -m realaiagent owner-key         # rxa_...  (same key every time, from any machine)
+```
+
+Then open `https://<project>.vercel.app/` — the public chat — and use
+the `rxa_` key against `/v1/*`. Optional: `REALAI_TELEGRAM_BOT_TOKEN` +
+`REALAI_TELEGRAM_CHAT_ID` + `REALAI_TELEGRAM_WEBHOOK_SECRET` and
+`python examples/register_webhook.py https://<project>.vercel.app/webhook`
+for Telegram control.
+
+**How autonomy works without a background thread.** Serverless functions
+cannot run the 10-second thinking loop. Instead the agent thinks
+(`Agent.tick_if_due`) at most once per `REALAI_SERVERLESS_TICK_SECONDS`
+(60) on the back of a chat request — the "last tick" timestamp is a
+database row, so all instances share one cadence — and `vercel.json`
+declares a **Vercel Cron** hitting `GET /api/cron/tick` every 10 minutes
+(Hobby-tier crons run daily-ish; Pro runs on schedule) so goals advance
+and memory consolidates even with no visitors.
+
+**What you get on the free tiers.** Turso free: 5 GB, ~500 M row reads
+per month — the whole agent uses a few dozen rows per request. Vercel
+Hobby: 100 GB-h of functions, 30 s max duration (set in `vercel.json`).
+The local generative backends (Ollama, Stable Diffusion, whisper, Piper)
+are **not** available on Vercel — there is no GPU and no localhost; the
+agent stays honest about that unless you point `REALAI_LLM_URL` etc. at a
+server you own that is reachable from the internet. Presentations work
+everywhere: the `.pptx` writer is pure Python and the file is stored in
+the database.
+
+**Supabase / Postgres instead?** Not supported, on purpose: the whole
+codebase is SQLite SQL (`INSERT OR IGNORE`, `ON CONFLICT`, `pragma_table_info`,
+`json` as TEXT). Turso *is* SQLite, so every statement runs unchanged.
+Porting to Postgres would mean rewriting ~110 queries and a driver — if
+you truly need Supabase, say so and it becomes a separate `storage`
+backend.
+
+### Vercel without a database (0.3.0 behaviour)
+
+Still works: with no `REALAI_DATABASE_URL` the data dir is `/tmp/realai`
+and state lives only as long as the function instance. Fine for a demo,
+wrong for a product.
 
 The whole product — API, live web dashboard, 15 SSE streams, and the
 Telegram webhook — is **one pure-stdlib Python serverless function**
@@ -762,6 +832,14 @@ Environment variables (all optional):
 | `REALAI_SMTP_TIMEOUT` | `10` | seconds; mail never blocks a request longer |
 | `VERCEL` | *(auto)* | Vercel sets `1` → data dir `/tmp/realai`, webhook mode |
 | `REALAI_AGENT_NAME` / `REALAI_OWNER_NAME` | `REAL` / `Owner` | identity |
+| `REALAI_DATABASE_URL` (or `TURSO_DATABASE_URL`) | *(none = local SQLite)* | Turso/libSQL database, `libsql://…` or `https://…` |
+| `REALAI_DATABASE_TOKEN` (or `TURSO_AUTH_TOKEN`) | *(none)* | Turso auth token |
+| `REALAI_SERVERLESS_TICK_SECONDS` | `60` | min. seconds between autonomous thoughts on serverless |
+| `CRON_SECRET` | *(none)* | accepted as `Authorization: Bearer` on `/cron/tick` (Vercel Cron sets it) |
+| `REALAI_LLM_URL` / `REALAI_LLM_MODEL` | *(none)* / `llama3.1:8b` | local Ollama for fluent talk |
+| `REALAI_IMAGE_URL` | *(none)* | Stable Diffusion WebUI (`--api`) for images |
+| `REALAI_STT_URL` / `REALAI_TTS_URL` / `REALAI_TTS_COMMAND` | *(none)* | whisper.cpp / Piper for voice |
+| `REALAI_MEDIA_TTL_HOURS` | `24` | generated files expire after this |
 
 ## Files you own
 
@@ -781,6 +859,9 @@ realaiagent/           the whole agent — pure Python stdlib
   telegram.py          master control, webhook mode, free-will reports
   web.py               web layer: SSE hub (15 topics), dashboard, /approve
   vercel.py            WSGI adapter the Vercel Python runtime actually loads
+  libsql_http.py       Turso / libSQL SQL-over-HTTP driver (stdlib urllib)
+  generative.py        local LLM talk, images, speech, built-in .pptx writer
+  react.py             Think -> Act -> Observe loop over a local LLM
   actions/             permission gate, executor, built-in actions
   api/                 keys, HTTP server (same WebApp as serverless), routes
 api/                   Vercel serverless entrypoints (free tier)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "realaiagent"
-version = "0.4.0"
+version = "0.5.0"
 description = "RealAI Agent - a fully local, owner-controlled cognitive AI agent with its own mind, built-in learning, permissions, and device control. Pure Python stdlib. No external AI, no external APIs."
 readme = "README.md"
 requires-python = ">=3.9"

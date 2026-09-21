@@ -260,9 +260,21 @@ class WebApp:
             return self._stream(path, query, headers)
         if path == "/dashboard":
             return self._dashboard(query, headers)
+        if path == "/cron/tick":
+            return self._cron_tick(query, headers)
 
         status, ctype, body, extra = dispatch(
             self.agent, self.limiter, method, path, query, headers, raw_body)
+
+        # Serverless autonomy: no background thread exists on Vercel, so
+        # the agent thinks (rate-limited through the database) on the back
+        # of ordinary traffic. Self-hosted keeps its own tick thread.
+        if self.agent.cfg.is_vercel and method == "POST" \
+                and path in ("/v1/chat", "/public/chat"):
+            try:
+                self.agent.tick_if_due()
+            except Exception:  # noqa: BLE001
+                pass
 
         # feed the "plans" topic with every completed chat turn
         if method == "POST" and path in ("/v1/chat", "/public/chat") \
@@ -279,6 +291,31 @@ class WebApp:
             except (ValueError, AttributeError):
                 pass
         return status, ctype, body, extra
+
+    def _cron_tick(self, query: Dict[str, str],
+                   headers: Dict[str, str]) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """``GET /cron/tick`` — one autonomous thought, for Vercel Cron.
+
+        Guarded like the dashboard (``REALAI_WEB_TOKEN``); Vercel Cron also
+        sends ``Authorization: Bearer $CRON_SECRET`` which is accepted when
+        that env var is set.
+        """
+        import os as _os
+        secret = _os.environ.get("CRON_SECRET", "")
+        auth = headers.get("authorization", "")
+        if secret and auth == f"Bearer {secret}":
+            allowed = True
+        else:
+            allowed, _reason, _retry = self._web_gate(query, headers, "cron")
+        if not allowed:
+            return self._json(401, {"error": {"code": "unauthorized",
+                                              "message": "cron token required"}})
+        thought = self.agent.tick_if_due(force=True)
+        snap = self.agent.mind.snapshot()
+        return self._json(200, {"ok": True, "ticked": thought,
+                                "thoughts": snap["thoughts"],
+                                "mood": snap["mood"]["note"],
+                                "storage": self.agent.storage.backend})
 
     # ------------------------------------------------------------- helpers
 
@@ -537,20 +574,16 @@ class WebApp:
         ``media_ttl_hours``.
         """
         gen = getattr(self.agent, "generative", None)
-        path = gen.resolve_media(name) if gen is not None else None
-        if path is None:
+        found = gen.fetch_media(name) if gen is not None else None
+        if found is None:
             return 404, "application/json", json.dumps({"error": {
                 "code": "not_found", "message": "no such media"}}).encode(), {}
-        mime = {"png": "image/png", "jpg": "image/jpeg", "wav": "audio/wav",
-                "md": "text/markdown; charset=utf-8",
-                "pptx": "application/vnd.openxmlformats-officedocument."
-                        "presentationml.presentation"}[path.suffix[1:]]
         headers = {"Cache-Control": "private, max-age=3600"}
-        if path.suffix == ".pptx":
+        if name.endswith(".pptx"):
             headers["Content-Disposition"] = \
                 f'attachment; filename="{self.agent.mind.agent_name}-presentation.pptx"'
         self.agent.storage.count("requests", "media", detail={"name": name})
-        return 200, mime, path.read_bytes(), headers
+        return 200, found["mime"], found["data"], headers
 
     # --------------------------------------------------------- owner inbox
 

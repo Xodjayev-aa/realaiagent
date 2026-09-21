@@ -40,6 +40,7 @@ def healthz(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
         "uptime_s": snap["uptime_s"],
         "autonomy": snap["autonomy"],
         "mood": snap["mood"]["note"],
+        "storage": agent.storage.backend,
     })
 
 

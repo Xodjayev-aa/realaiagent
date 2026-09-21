@@ -158,6 +158,12 @@ CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS media (
+    name TEXT PRIMARY KEY,
+    mime TEXT NOT NULL,
+    data BLOB NOT NULL,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS session_turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
@@ -186,19 +192,31 @@ class Storage:
     SESSION_MAX_ROWS = 20000
     SESSION_PRUNE_EVERY = 128
 
-    def __init__(self, db_path: Any) -> None:
+    def __init__(self, db_path: Any, database_url: str = "",
+                 auth_token: str = "") -> None:
         # Live observers (e.g. the 0.3.0 SSE hub). Each hook is called as
         # hook(source, name, data) with source in {"count", "event"};
         # name is the category (count) or event type (log_event).
         # Hooks must be cheap and never block; errors are swallowed.
         self.hooks: List[Callable[[str, str, Dict[str, Any]], None]] = []
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        # Backend: a local SQLite file (default) or a Turso/libSQL database
+        # over HTTPS when ``database_url`` is set - the same SQL, durable
+        # across serverless cold starts. See :mod:`realaiagent.libsql_http`.
+        self.remote = bool(database_url)
+        if self.remote:
+            from .libsql_http import connect as _remote_connect
+            self._conn = _remote_connect(database_url, auth_token)
+            self.backend = "turso"
+        else:
+            self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self.backend = "sqlite"
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._migrate()
-            self._conn.execute("PRAGMA journal_mode=WAL")
+            if not self.remote:
+                self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.commit()
 
     def _migrate(self) -> None:
@@ -221,6 +239,42 @@ class Storage:
             cur = self._conn.execute(sql, params)
             self._conn.commit()
             return cur
+
+    # Generated media (images / audio / decks). On a serverless deploy the
+    # disk is ephemeral, so files are also kept here when the backend is
+    # remote; ``media_get`` is the single lookup the web layer uses.
+    def media_put(self, name: str, mime: str, data: bytes) -> None:
+        self.execute("INSERT OR REPLACE INTO media(name, mime, data, created_at) "
+                     "VALUES(?,?,?,?)", (name, mime, data, _now()))
+
+    def media_get(self, name: str) -> Optional[Dict[str, Any]]:
+        row = self.query_one("SELECT mime, data FROM media WHERE name=?", (name,))
+        if row is None:
+            return None
+        data = row["data"]
+        if isinstance(data, str):
+            data = data.encode("latin-1", "ignore")
+        return {"mime": row["mime"], "data": bytes(data)}
+
+    def media_prune(self, older_than_s: float) -> int:
+        cur = self.execute("DELETE FROM media WHERE created_at < ?",
+                           (_now() - older_than_s,))
+        return max(0, cur.rowcount)
+
+    # Secrets that used to live as files in the data dir (the hashing
+    # pepper, the owner key). Kept in the database too so a serverless
+    # deploy with an ephemeral disk still has them after a cold start.
+    def secret_get(self, name: str) -> Optional[str]:
+        row = self.query_one("SELECT value FROM state WHERE key=?",
+                             (f"secret.{name}",))
+        return str(row["value"]) if row else None
+
+    def secret_set_if_absent(self, name: str, value: str) -> str:
+        """Store ``value`` unless another instance stored one first;
+        returns whichever value is now durable (race-safe)."""
+        self.execute("INSERT OR IGNORE INTO state(key, value) VALUES(?,?)",
+                     (f"secret.{name}", value))
+        return self.secret_get(name) or value
 
     def query(self, sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
         with self._lock:
@@ -265,7 +319,7 @@ class Storage:
                 (_now(), key_id, category, event,
                  json.dumps(detail) if detail else None),
             )
-        except sqlite3.Error:
+        except Exception:  # noqa: BLE001 - sqlite3.Error or a remote LibsqlError
             return
         with self._lock:
             self._total += 1

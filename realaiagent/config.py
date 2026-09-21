@@ -96,6 +96,18 @@ class Config:
     # (with Last-Event-ID) and the stream continues gapless.
     sse_window: float = 20.0
 
+    # --- durable database (Turso / libSQL over HTTPS) ---------------------
+    # Empty = local SQLite file in data_dir (self-hosted). Set both to run
+    # on Vercel/serverless with state that survives cold starts. Talks the
+    # SQL-over-HTTP protocol with urllib - no driver package needed.
+    database_url: str = ""          # libsql://<db>-<org>.turso.io  (or https://)
+    database_token: str = ""        # turso db tokens create <db>
+
+    # Serverless autonomy: with no background thread, the agent "thinks"
+    # at most once per this many seconds, piggybacking on a request or a
+    # Vercel cron hitting GET /cron/tick.
+    serverless_tick_seconds: float = 60.0
+
     # --- optional LOCAL generative backends (all off unless a URL is set) --
     # These are servers running on YOUR machine: Ollama for fluent talk,
     # Stable Diffusion WebUI (--api) for images, whisper.cpp server for
@@ -184,6 +196,12 @@ class Config:
             media_ttl_hours=float(os.environ.get("REALAI_MEDIA_TTL_HOURS", "24")),
             owner_name=os.environ.get("REALAI_OWNER_NAME", "Owner"),
             is_vercel=vercel,
+            database_url=(os.environ.get("REALAI_DATABASE_URL")
+                          or os.environ.get("TURSO_DATABASE_URL", "")).strip(),
+            database_token=(os.environ.get("REALAI_DATABASE_TOKEN")
+                            or os.environ.get("TURSO_AUTH_TOKEN", "")).strip(),
+            serverless_tick_seconds=float(os.environ.get(
+                "REALAI_SERVERLESS_TICK_SECONDS", "60")),
             telegram_webhook_secret=os.environ.get(
                 "REALAI_TELEGRAM_WEBHOOK_SECRET", ""),
             web_token=os.environ.get("REALAI_WEB_TOKEN", ""),

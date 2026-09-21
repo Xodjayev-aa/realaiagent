@@ -122,12 +122,57 @@ def _cmd_demo(args: argparse.Namespace) -> int:
 
 
 def _cmd_owner_key(args: argparse.Namespace) -> int:
+    """Print the owner key. With REALAI_DATABASE_URL set (Turso), it is
+    read from - or created in - the shared database, which is how you get
+    the key for a Vercel deploy: run this once on your laptop with the
+    same env vars."""
     from pathlib import Path
-    p = Path(args.data) / "owner_key.txt"
+    from .config import Config
+    cfg = Config.from_env()
+    if args.data is not None:
+        cfg.data_dir = Path(args.data).expanduser().resolve()
+        cfg.file_roots = [cfg.data_dir]
+    if cfg.database_url:
+        from .engine import Agent
+        agent = Agent(cfg)
+        _, key, created = agent.keys.ensure_owner_key()
+        print(key)
+        if created:
+            print("(created now in the shared database)", file=__import__("sys").stderr)
+        return 0
+    p = cfg.owner_key_path
     if not p.exists():
         print(f"no owner key yet at {p} - start the server once to create it")
         return 1
     print(p.read_text().strip())
+    return 0
+
+
+def _cmd_db_check(args: argparse.Namespace) -> int:
+    """Verify the Turso/libSQL connection and create the schema."""
+    import time as _t
+    from .config import Config
+    cfg = Config.from_env()
+    if not cfg.database_url:
+        print("REALAI_DATABASE_URL (or TURSO_DATABASE_URL) is not set - "
+              "local SQLite would be used.")
+        return 1
+    from .libsql_http import LibsqlError, connect
+    t0 = _t.time()
+    try:
+        conn = connect(cfg.database_url, cfg.database_token)
+        conn.execute("SELECT 1")
+    except LibsqlError as exc:
+        print(f"FAILED: {exc}")
+        return 1
+    print(f"connected to {conn.url} in {(_t.time() - t0) * 1000:.0f} ms")
+    from .storage import Storage
+    st = Storage(cfg.db_path, database_url=cfg.database_url,
+                 auth_token=cfg.database_token)
+    tables = st.query("SELECT name FROM sqlite_master WHERE type='table' "
+                      "ORDER BY name")
+    print("schema ok, tables:", ", ".join(t["name"] for t in tables))
+    print("usage rows:", st.query_one("SELECT COUNT(*) AS n FROM usage")["n"])
     return 0
 
 
@@ -213,9 +258,16 @@ def build_parser() -> argparse.ArgumentParser:
                          help="data dir the read_local_file tool is confined to")
     p_react.set_defaults(func=_cmd_react)
 
-    p_key = sub.add_parser("owner-key", help="print the stored owner key")
-    p_key.add_argument("--data", default="data")
+    p_key = sub.add_parser("owner-key",
+                           help="print the owner key (from the shared "
+                                "database when REALAI_DATABASE_URL is set)")
+    p_key.add_argument("--data", default=None)
     p_key.set_defaults(func=_cmd_owner_key)
+
+    p_db = sub.add_parser("db-check",
+                          help="test the Turso/libSQL connection and create "
+                               "the schema")
+    p_db.set_defaults(func=_cmd_db_check)
     return parser
 
 
