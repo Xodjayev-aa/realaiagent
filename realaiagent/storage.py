@@ -158,6 +158,18 @@ CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS session_turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    sender TEXT,
+    message TEXT NOT NULL,
+    response TEXT NOT NULL,
+    intent TEXT,
+    slots TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_turns
+    ON session_turns(session_id, id);
 """
 
 
@@ -315,6 +327,89 @@ class Storage:
                 payload = {"raw": r["payload"]}
             out.append({"ts": r["ts"], "type": r["type"], "payload": payload})
         return out
+
+    # ------------------------------------------------- conversation sessions
+    #
+    # The product's chat app keeps multi-turn context. Serverless functions
+    # are frozen between requests, so the context has to live in the
+    # database, not in a Python object: every turn is written here and the
+    # last N are read back on the next request.
+
+    def session_add_turn(self, session_id: str, message: str, response: str,
+                         sender: str = "web", intent: str = "",
+                         slots: Optional[Dict[str, Any]] = None) -> int:
+        cur = self.execute(
+            "INSERT INTO session_turns(session_id, ts, sender, message, "
+            "response, intent, slots) VALUES(?,?,?,?,?,?,?)",
+            (session_id, _now(), sender, message, response, intent,
+             json.dumps(slots or {})))
+        return int(cur.lastrowid or 0)
+
+    def session_turns(self, session_id: str,
+                      limit: int = 12) -> List[Dict[str, Any]]:
+        """The last ``limit`` turns of a session, oldest first."""
+        limit = max(1, min(int(limit or 1), 100))
+        rows = self.query(
+            "SELECT * FROM (SELECT id, ts, sender, message, response, intent,"
+            " slots FROM session_turns WHERE session_id=? ORDER BY id DESC "
+            "LIMIT ?) ORDER BY id ASC", (session_id, limit))
+        for r in rows:
+            try:
+                r["slots"] = json.loads(r.get("slots") or "{}")
+            except (ValueError, TypeError):
+                r["slots"] = {}
+        return rows
+
+    def session_count(self, session_id: str) -> int:
+        row = self.query_one(
+            "SELECT COUNT(*) n FROM session_turns WHERE session_id=?",
+            (session_id,))
+        return int(row["n"]) if row else 0
+
+    def session_ids(self, limit: int = 50) -> List[str]:
+        rows = self.query(
+            "SELECT session_id FROM session_turns GROUP BY session_id "
+            "ORDER BY MAX(id) DESC LIMIT ?", (max(1, min(limit, 500)),))
+        return [r["session_id"] for r in rows]
+
+    def session_clear(self, session_id: str) -> bool:
+        cur = self.execute("DELETE FROM session_turns WHERE session_id=?",
+                           (session_id,))
+        return cur.rowcount > 0
+
+    def search_memories(self, terms: Any, limit: int = 5,
+                        kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Token-overlap search over stored memories (the recall channel).
+
+        ``terms`` is an iterable of lowercase words. Returns rows with the
+        decoded ``value`` plus a ``score`` (0..1), best first. Purely local:
+        no vectors, no model - just word overlap weighted by strength.
+        """
+        wanted = {str(t).lower() for t in (terms or []) if str(t).strip()}
+        if not wanted:
+            return []
+        kinds = list(kinds or ("semantic", "episodic"))
+        marks = ",".join("?" for _ in kinds)
+        rows = self.query(
+            f"SELECT kind, key, value, strength, access_count FROM memories "
+            f"WHERE kind IN ({marks}) ORDER BY strength DESC, "
+            f"last_accessed DESC LIMIT 500", tuple(kinds))
+        scored: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                value = json.loads(r["value"])
+            except (ValueError, TypeError):
+                value = r["value"]
+            haystack = json.dumps(value, default=str).lower() + " " + \
+                str(r["key"]).lower()
+            hits = sum(1 for t in wanted if t in haystack)
+            if not hits:
+                continue
+            score = (hits / len(wanted)) * (0.6 + 0.4 * float(
+                r.get("strength") or 0.0))
+            scored.append({**r, "value": value, "score": round(score, 4)})
+        scored.sort(key=lambda x: -x["score"])
+        return scored[:max(1, min(int(limit or 1), 50))]
 
     # ------------------------------------------------------------------ keys
 

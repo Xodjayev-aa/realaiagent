@@ -61,9 +61,35 @@ class Config:
     # webhook (fine locally, do not leave open in production).
     telegram_webhook_secret: str = ""
 
-    # Optional shared secret guarding /dashboard and /stream/* (passed as
-    # ?token=... or the X-Web-Token header). Empty = public telemetry.
+    # Optional shared secret guarding /dashboard, /stream/* and the owner's
+    # /approve inbox (passed as ?token=... or the X-Web-Token header).
+    # Empty = public telemetry (fine locally, set it in production).
     web_token: str = ""
+
+    # --- the product web app (branded chat, developers portal) -----------
+    # Tagline shown under the wordmark on every page.
+    brand_tagline: str = ("A cognitive AI built from scratch — pure Python, "
+                          "no external AI, no external keys.")
+
+    # Keyless demo chat: a token bucket PER VISITOR (browser fingerprint /
+    # client IP), so one rude guest cannot exhaust the demo for everyone.
+    demo_rate_per_min: int = 12
+    demo_burst: int = 6
+
+    # How many previous turns the conversational voice keeps in context.
+    conversation_turns: int = 12
+
+    # --- owner email (stdlib SMTP only, e.g. a Gmail app password) -------
+    # Access requests reach the owner on Telegram AND email, so approvals
+    # never wait on one channel. Empty host = email disabled (no-ops).
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""       # Gmail *app* password, never the real one
+    smtp_from: str = ""           # defaults to smtp_user
+    smtp_to: str = ""             # comma separated owner inboxes
+    smtp_tls: str = "starttls"    # starttls | ssl | none
+    smtp_timeout: float = 10.0
 
     # Max seconds a single SSE stream window stays open. Bounded because
     # serverless functions freeze; the browser's EventSource reconnects
@@ -136,4 +162,20 @@ class Config:
             web_token=os.environ.get("REALAI_WEB_TOKEN", ""),
             sse_window=min(25.0, max(1.0, float(os.environ.get(
                 "REALAI_SSE_WINDOW", "20")))),
+            brand_tagline=os.environ.get("REALAI_BRAND_TAGLINE")
+            or cls.brand_tagline,
+            demo_rate_per_min=int(os.environ.get(
+                "REALAI_DEMO_RATE_PER_MIN", "12")),
+            demo_burst=int(os.environ.get("REALAI_DEMO_BURST", "6")),
+            conversation_turns=int(os.environ.get(
+                "REALAI_CONVERSATION_TURNS", "12")),
+            smtp_host=os.environ.get("REALAI_SMTP_HOST", "").strip(),
+            smtp_port=int(os.environ.get("REALAI_SMTP_PORT", "587")),
+            smtp_user=os.environ.get("REALAI_SMTP_USER", "").strip(),
+            smtp_password=os.environ.get("REALAI_SMTP_PASSWORD", ""),
+            smtp_from=os.environ.get("REALAI_SMTP_FROM", "").strip(),
+            smtp_to=os.environ.get("REALAI_SMTP_TO", "").strip(),
+            smtp_tls=(os.environ.get("REALAI_SMTP_TLS", "starttls")
+                      .strip().lower() or "starttls"),
+            smtp_timeout=float(os.environ.get("REALAI_SMTP_TIMEOUT", "10")),
         )

@@ -190,6 +190,10 @@ class WebApp:
             }
         if path == "/webhook" and method == "POST":
             return self._webhook(headers, raw_body)
+        if path in ("/logo.svg", "/favicon.ico"):
+            return self._asset(path)
+        if path == "/approve":
+            return self._approve(method, query, headers, raw_body)
         if path == "/stream" or path.startswith("/stream/"):
             return self._stream(path, query, headers)
         if path == "/dashboard":
@@ -199,7 +203,8 @@ class WebApp:
             self.agent, self.limiter, method, path, query, headers, raw_body)
 
         # feed the "plans" topic with every completed chat turn
-        if method == "POST" and path == "/v1/chat" and status == 200:
+        if method == "POST" and path in ("/v1/chat", "/public/chat") \
+                and status == 200:
             try:
                 meta = (json.loads(body).get("meta") or {})
                 self.hub.publish("plans", {
@@ -398,6 +403,163 @@ class WebApp:
             token=self.agent.cfg.web_token)
         body = html.encode("utf-8")
         return 200, "text/html; charset=utf-8", body, {}
+
+
+    # ---------------------------------------------------------- brand assets
+
+    def _asset(self, path: str) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """``/logo.svg`` and ``/favicon.ico``: our own generated SVG mark.
+
+        No external asset is ever fetched, embedded or linked — the browser
+        gets bytes this repo produced.
+        """
+        from . import web_pages
+        body = web_pages.favicon_bytes(self.agent.mind.agent_name)
+        self.agent.storage.count("requests", "asset",
+                                 detail={"path": path})
+        return 200, "image/svg+xml", body, {
+            "Cache-Control": "public, max-age=3600",
+        }
+
+    # --------------------------------------------------------- owner inbox
+
+    def _approve(self, method: str, query: Dict[str, str],
+                 headers: Dict[str, str],
+                 raw_body: bytes) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """``/approve`` — the owner's approval inbox, web-token gated.
+
+        Same gate as ``/dashboard`` and ``/stream/*``: with
+        ``REALAI_WEB_TOKEN`` set, the token must arrive as ``?token=``,
+        the ``X-Web-Token`` header, or (for the page's own buttons) in the
+        JSON body. Without it configured the inbox is open, and says so
+        loudly at the top of the page.
+        """
+        from . import web_pages
+        agent = self.agent
+        method = (method or "GET").upper()
+
+        payload: Dict[str, Any] = {}
+        if raw_body and method == "POST":
+            try:
+                parsed = json.loads(raw_body.decode("utf-8"))
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except (ValueError, UnicodeDecodeError):
+                return self._json(400, {"error": {
+                    "code": "bad_json", "message": "invalid JSON body"}})
+
+        token = (query.get("token") or headers.get("x-web-token")
+                 or str(payload.get("token") or ""))
+        expected = (agent.cfg.web_token or "").strip()
+        if expected and token != expected:
+            agent.storage.count("security", "approve_unauthorized")
+            if method == "GET" and "text/html" in str(
+                    headers.get("accept", "")):
+                return self._token_gate()
+            return self._json(401, {"error": {
+                "code": "unauthorized",
+                "message": "web token required (set REALAI_WEB_TOKEN, then "
+                           "open /approve?token=<token>)"}})
+
+        if method == "POST":
+            return self._approve_action(payload)
+        if method != "GET":
+            return self._json(405, {"error": {
+                "code": "method_not_allowed",
+                "message": "use GET (the inbox) or POST (a decision)"}})
+
+        page = web_pages.approve_page(agent, token=token)
+        return 200, "text/html; charset=utf-8", page.encode("utf-8"), {
+            "Cache-Control": "no-store",
+        }
+
+    def _approve_action(self, payload: Dict[str, Any]
+                        ) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """One tap in the inbox: approve / deny / unban / vip."""
+        agent = self.agent
+        action = str(payload.get("action", "")).strip().lower()
+        username = str(payload.get("username", "")).strip().lower()
+        if action not in ("approve", "deny", "unban", "vip"):
+            return self._json(400, {"error": {
+                "code": "bad_request",
+                "message": "action must be approve|deny|unban|vip"}})
+        if not username or len(username) > 48:
+            return self._json(400, {"error": {
+                "code": "bad_request",
+                "message": "username (1-48 chars) is required"}})
+
+        users = agent.users
+        try:
+            if action == "approve":
+                out = users.approve(username, created_by="owner-web")
+                # The key is returned once, to the gated page, and is never
+                # written to the ledger or mailed anywhere.
+                return self._json(200, {
+                    "ok": True, "action": action, "username": username,
+                    "status": out.get("status"),
+                    "api_key": out["api_key"], "key_id": out["key_id"],
+                    "key_scopes": out["key_scopes"],
+                    "message": "approved - copy the key now, it is shown "
+                               "exactly once",
+                })
+            if action == "deny":
+                row = users.deny(username, created_by="owner-web")
+                message = "denied and banned; their keys were revoked"
+            elif action == "unban":
+                row = users.unban(username, created_by="owner-web")
+                message = "unbanned - they are PENDING again and still need " \
+                          "an approval to get a key"
+            else:
+                vip = bool(payload.get("vip", True))
+                row = users.set_vip(username, vip)
+                message = ("VIP: requests are free" if vip
+                           else "VIP removed: per-request billing resumes")
+        except KeyError:
+            return self._json(404, {"error": {
+                "code": "not_found", "message": f"user {username} not found"}})
+
+        agent.storage.count("users", f"web_{action}")
+        agent.storage.log_event("user_status", {
+            "username": username, "status": (row or {}).get("status"),
+            "by": "owner-web", "action": action})
+        return self._json(200, {
+            "ok": True, "action": action, "username": username,
+            "status": (row or {}).get("status"),
+            "is_vip": bool((row or {}).get("is_vip")),
+            "message": message,
+        })
+
+    def _token_gate(self) -> Tuple[int, str, bytes, Dict[str, str]]:
+        """A browser-friendly 401: enter the web token, then see the inbox."""
+        html = (
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,"
+            "initial-scale=1\"><title>Approvals — token required</title>"
+            "<style>body{background:#0b0e14;color:#d7dce5;margin:0;"
+            "font:15px/1.6 ui-sans-serif,system-ui,sans-serif;"
+            "display:flex;align-items:center;justify-content:center;"
+            "min-height:100vh}form{background:#12161f;border:1px solid "
+            "#1f2633;border-radius:14px;padding:22px;max-width:420px;"
+            "width:calc(100% - 40px)}h1{font-size:19px;margin:0 0 6px}"
+            "p{color:#8b94a7;font-size:13.5px;margin:0 0 14px}"
+            "input{width:100%;background:#0e1219;color:#d7dce5;border:1px "
+            "solid #1f2633;border-radius:10px;padding:10px 12px;font:inherit;"
+            "box-sizing:border-box}button{margin-top:12px;width:100%;"
+            "background:#1d2a44;color:#fff;border:1px solid #7aa2f7;"
+            "border-radius:10px;padding:10px;font:inherit;cursor:pointer}"
+            "a{color:#7aa2f7}</style></head><body>"
+            "<form method=\"get\" action=\"/approve\">"
+            "<h1>Owner approval inbox</h1>"
+            "<p>This page is gated by <code>REALAI_WEB_TOKEN</code>. Enter it "
+            "to continue — the token stays in the URL of your own browser "
+            "and is never stored by the agent.</p>"
+            "<input name=\"token\" type=\"password\" autofocus "
+            "placeholder=\"web token\" autocomplete=\"off\">"
+            "<button type=\"submit\">Open the inbox</button>"
+            "<p style=\"margin-top:14px\"><a href=\"/\">← back to the chat "
+            "app</a></p></form></body></html>")
+        return 401, "text/html; charset=utf-8", html.encode("utf-8"), {
+            "Cache-Control": "no-store"}
 
 
 def _int_or(raw: Any, default: int) -> int:

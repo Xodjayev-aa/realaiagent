@@ -45,6 +45,23 @@ class _RateLimiter:
             return True
 
 
+def client_ip(headers: Dict[str, str]) -> str:
+    """Best-effort client address, for per-visitor demo rate limiting only.
+
+    Proxied deployments (Vercel, nginx) put the real client in
+    ``X-Forwarded-For``; the threaded server injects the socket peer as
+    ``X-Real-Ip``. This is a rate-limit hint, never an identity: it grants
+    nothing and is not stored.
+    """
+    for name in ("x-forwarded-for", "x-real-ip", "cf-connecting-ip"):
+        raw = str(headers.get(name) or "").strip()
+        if raw:
+            first = raw.split(",")[0].strip()
+            if first:
+                return first[:64]
+    return ""
+
+
 def _compile_routes() -> List[Tuple[str, "re.Pattern[str]", List[str], Any]]:
     out = []
     for method, path, scopes, handler in R.ROUTES:
@@ -193,7 +210,8 @@ def dispatch(agent: Agent, limiter: _RateLimiter, method: str, path: str,
                 "code": "bad_json", "message": "invalid JSON body"}})
 
     ctx = {"key": key_row, "query": query,
-           "request_id": request_id, "params": params}
+           "request_id": request_id, "params": params,
+           "headers": headers, "client_ip": client_ip(headers)}
     try:
         status, payload = handler(agent, body, ctx)
         code = 500 if status >= 500 else status
@@ -208,23 +226,39 @@ def dispatch(agent: Agent, limiter: _RateLimiter, method: str, path: str,
 
 
 class ApiServer:
-    def __init__(self, agent: Agent, host: str, port: int) -> None:
+    """The threaded HTTP server.
+
+    It runs the *same* :class:`~realaiagent.web.WebApp` object as the
+    serverless handler, so both serve exactly the same surface: the product
+    pages (``/``, ``/developers``), the owner inbox (``/approve``), the
+    assets (``/logo.svg``, ``/favicon.ico``), the dashboard, the 15 SSE
+    streams, the Telegram webhook and the whole ``/v1/*`` API. It used to
+    call :func:`dispatch` directly, which silently served only the API half
+    — a browser pointed at the threaded server got 404s for everything the
+    web layer adds.
+    """
+
+    def __init__(self, agent: Agent, host: str, port: int,
+                 web: Any = None) -> None:
         self.agent = agent
         self.host = host
         self.port = port
-        self.limiter = _RateLimiter(agent.cfg.rate_limit_per_min,
-                                    agent.cfg.rate_burst)
+        if web is None:
+            from ..web import WebApp   # late import: web imports this module
+            web = WebApp(agent)
+        self.web = web
+        self.limiter = web.limiter
         handler = self._make_handler()
         self.httpd = ThreadingHTTPServer((host, port), handler)
         self.httpd.daemon_threads = True
 
     def _make_handler(self):
-        agent = self.agent
-        limiter = self.limiter
-        max_body = agent.cfg.max_body_bytes
+        web = self.web
+        max_body = self.agent.cfg.max_body_bytes
 
         class Handler(BaseHTTPRequestHandler):
             server_version = "RealAI/0.3"
+            protocol_version = "HTTP/1.1"
 
             # ---------------------------------------------------- plumbing
 
@@ -265,12 +299,23 @@ class ApiServer:
                 query = {k: v[0] for k, v in parse_qs(url.query).items()}
                 # cap the read at the body limit + 1 byte so oversized
                 # bodies are rejected (413) without full allocation
-                length = int(self.headers.get("Content-Length") or 0)
-                read = min(length, max_body + 1) if length else 0
-                raw = self.rfile.read(read) if read else b""
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except (TypeError, ValueError):
+                    length = 0
+                read = min(max(length, 0), max_body + 1)
+                try:
+                    raw = self.rfile.read(read) if read else b""
+                except OSError:
+                    raw = b""
                 headers = {k.lower(): v for k, v in self.headers.items()}
-                status, ctype, body, extra = dispatch(
-                    agent, limiter, self.command, path, query, headers, raw)
+                # the peer address: used only as a per-visitor demo hint
+                try:
+                    headers.setdefault("x-real-ip", self.client_address[0])
+                except (AttributeError, IndexError, TypeError):
+                    pass
+                status, ctype, body, extra = web.handle(
+                    self.command, path, query, headers, raw)
                 self._send_raw(status, body, ctype, extra)
 
             # ------------------------------------------------------ methods
@@ -292,8 +337,23 @@ class ApiServer:
         self.httpd.serve_forever()
 
     def shutdown(self) -> None:
+        """Stop serving. **Must not** be called from the serving thread:
+        ``BaseServer.shutdown`` waits for ``serve_forever`` to return, so
+        calling it from there deadlocks. Signal handlers use
+        :meth:`server_close` instead."""
         self.httpd.shutdown()
         self.httpd.server_close()
+
+    def server_close(self) -> None:
+        """Release the listening socket without joining the serve loop.
+
+        This is the only safe way to tear down from a signal handler, which
+        runs on the same thread as ``serve_forever``.
+        """
+        try:
+            self.httpd.server_close()
+        except OSError:
+            pass
 
     @property
     def bound_port(self) -> int:

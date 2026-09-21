@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import threading
 import time
-from string import Template
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..engine import Agent
@@ -45,233 +44,198 @@ def healthz(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
 
 
 def index_page(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
-    """The public face: a usable AI website, open to everyone.
+    """The product's front door: a branded chat app, open to everyone.
 
-    Anyone can chat with the agent right here (keyless, rate-limited demo).
-    The raw ``/v1/*`` API stays gated behind owner-issued keys, so the owner
-    alone decides who gets programmatic access - exactly the split the
-    project is built around.
+    Anyone can talk to the agent right here — keyless, per-visitor
+    rate-limited, no scopes, so nothing privileged is reachable from a
+    browser. The raw ``/v1/*`` API stays behind owner-issued keys, which is
+    the whole point of the split: the website is public, the machine is the
+    owner's.
+
+    Rendering lives in :mod:`realaiagent.web_pages` (logo, favicon, session
+    sidebar, markdown, streaming reveal, typing state, mobile layout).
     """
-    snap = agent.mind.snapshot()
-    c = agent.storage.get_counters()
-    t = c.get("totals", {})
-    endpoints = [
-        ("POST", "/v1/chat", "talk to the agent  {\"message\": \"...\"}"),
-        ("GET", "/v1/status", "mind state: drives, mood, goals, counters"),
-        ("GET", "/v1/counters", "everything counted - the full ledger"),
-        ("GET", "/v1/usage?by=category|key|day", "usage breakdowns (admin)"),
-        ("GET", "/v1/events", "the agent's thoughts & actions log"),
-        ("GET", "/v1/goals", "goal queue"),
-        ("GET", "/v1/skills", "learned skills"),
-        ("GET", "/v1/devices", "registered devices"),
-        ("GET", "/v1/permissions", "policies + pending requests"),
-        ("GET", "/v1/users", "clients: PENDING/APPROVED/BANNED (owner)"),
-        ("POST", "/v1/learn", "train the language model (learn scope)"),
-        ("GET", "/healthz", "liveness (public)"),
-    ]
-    rows = "\n".join(
-        f"<tr><td class='m'>{m}</td><td class='p'>{p}</td><td>{d}</td></tr>"
-        for m, p, d in endpoints)
-    html = _INDEX_HTML.substitute(
-        agent=snap["agent"], owner=snap["owner"],
-        mood=snap["mood"]["note"],
-        grand=c.get("grand_total", 0),
-        chat=t.get("chat", 0), rows=rows)
-    return 200, html
+    from .. import web_pages
+    return 200, web_pages.chat_page(agent)
 
 
-_INDEX_HTML = Template("""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>$agent — your own AI, live</title>
-<style>
- :root { color-scheme: dark; }
- body { background:#0b0e14; color:#d7dce5; font:15px/1.55
-        ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif;
-        margin:0; padding:36px 20px; }
- main { max-width: 920px; margin: 0 auto; }
- h1 { font-size: 30px; margin: 0 0 4px; }
- .tag { color:#8b94a7; font-size:15px; margin-bottom:22px; }
- .tag b { color:#3fd68f; }
- .card { background:#12161f; border:1px solid #1f2633; border-radius:14px;
-         padding:18px 20px; margin-bottom:16px; }
- .k { color:#8b94a7; font-size:12px; text-transform:uppercase;
-      letter-spacing:.08em; margin-bottom:10px; }
- /* chat */
- #chatlog { background:#0e1219; border:1px solid #1f2633; border-radius:10px;
-            height:260px; overflow-y:auto; padding:12px;
-            font:13.5px/1.6 ui-sans-serif,system-ui,sans-serif; }
- .msg { margin:0 0 10px; word-break:break-word; }
- .who { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
-        color:#8b94a7; }
- .who.me { color:#7aa2f7; } .who.ai { color:#3fd68f; }
- .rowline { display:flex; gap:8px; margin-top:10px; }
- #chatinput { flex:1; background:#0e1219; color:#d7dce5; border:1px solid
-              #1f2633; border-radius:10px; padding:10px 12px; font:inherit; }
- #chatinput:focus { outline:none; border-color:#33405a; }
- button.send { background:#1d2a44; color:#fff; border:1px solid #7aa2f7;
-               border-radius:10px; padding:10px 18px; font:inherit;
-               cursor:pointer; }
- button.send:disabled { opacity:.5; cursor:wait; }
- .hint { color:#5c6577; font-size:12px; margin-top:8px; }
- /* control */
- .grid3 { display:grid; grid-template-columns:repeat(auto-fit,
-          minmax(220px,1fr)); gap:12px; }
- .tile { background:#0e1219; border:1px solid #1f2633; border-radius:10px;
-         padding:12px; }
- .tile h3 { margin:0 0 4px; font-size:14px; }
- .tile p { margin:0; color:#8b94a7; font-size:12.5px; }
- .ok { color:#3fd68f; } .warn { color:#f5c542; }
- table { width:100%; border-collapse:collapse; font-size:13px; }
- td { padding:6px 9px; border-top:1px solid #1f2633; vertical-align:top; }
- .m { color:#7aa2f7; font-family:ui-monospace,monospace; white-space:nowrap; }
- .p { color:#d7dce5; font-family:ui-monospace,monospace; }
- code { background:#1a2030; padding:1px 6px; border-radius:6px; font-size:13px; }
- footer { color:#5c6577; font-size:12.5px; margin-top:18px; }
- a { color:#7aa2f7; }
-</style></head><body><main>
- <h1>🤖 $agent</h1>
- <div class="tag">A cognitive AI built <b>from scratch</b> — pure Python, no
-  external AI, no external keys. It lives here, it's <b>yours</b>, and anyone
-  can say hello below.</div>
+def developers(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
+    """The developer portal: a live endpoint table + key request form.
 
- <div class="card"><div class="k">talk to it — no key needed</div>
-  <div id="chatlog">
-    <div class="msg"><span class="who ai">$agent</span><div>Hi! I'm $agent, a
-     self-contained AI with my own mind, memory and goals. Ask me anything —
-     try "status", or tell me something to remember.</div>
-  </div>
-  <div class="rowline">
-    <input id="chatinput" placeholder="Say something to $agent…"
-           autocomplete="off">
-    <button class="send" id="send">Send</button>
-  </div>
-  <div class="hint">Public demo is rate-limited. For programmatic access, the
-   owner issues API keys below.</div>
- </div>
+    The table is generated from the same route registry ``/api.json``
+    serves, so the documentation cannot drift from the code.
+    """
+    from .. import web_pages
+    host = web_pages.request_host(ctx.get("headers") or {})
+    return 200, web_pages.developers_page(agent, api_routes(agent), host=host)
 
- <div class="card"><div class="k">who's in charge? you are.</div>
-  <div class="grid3">
-    <div class="tile"><h3 class="ok">You own the keys</h3>
-      <p>API clients start <b>PENDING</b>. You approve, ban or VIP them.
-       No key → no API. The website stays open; the API is yours to gate.</p></div>
-    <div class="tile"><h3 class="ok">Train it yourself</h3>
-      <p>Teach intents and facts with <code>/v1/learn</code> or by chatting.
-       It's a from-scratch model you can shape — nothing is pretrained.</p></div>
-    <div class="tile"><h3 class="warn">Everything is counted</h3>
-      <p>Every request, thought and action hits a durable ledger you can audit
-       in the <a href="/dashboard">live dashboard</a>.</p></div>
-  </div>
- </div>
 
- <div class="card"><div class="k">for developers (auth:
-   <code>Authorization: Bearer &lt;key&gt;</code>)</div>
-  <table>$rows
-   <tr><td class="m">full list</td><td class="p">/api.json</td>
-       <td>machine-readable index of every route</td></tr>
-  </table>
- </div>
-
- <footer>owner: $owner · mood: $mood · $grand events counted ·
-  MIT — 100% your code</footer>
-</main>
-<script>
-var log = document.getElementById("chatlog");
-var inp = document.getElementById("chatinput");
-var btn = document.getElementById("send");
-function esc(s){return String(s).replace(/[&<>"]/g,function(ch){
-  return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch];});}
-function add(who, cls, text){
-  var d=document.createElement("div"); d.className="msg";
-  d.innerHTML='<span class="who '+cls+'">'+who+'</span><div>'+esc(text)+'</div>';
-  log.appendChild(d); log.scrollTop=log.scrollHeight;
-}
-function send(){
-  var text=(inp.value||"").trim(); if(!text) return;
-  btn.disabled=true; add("you","me",text); inp.value="";
-  fetch("/public/chat",{method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({message:text})})
-  .then(function(r){return r.json();})
-  .then(function(j){
-    btn.disabled=false;
-    if(j && j.response){ add("$agent","ai",j.response); }
-    else { add("$agent","ai",(j&&j.error&&j.error.message)||"no reply"); }
-    inp.focus();
-  })
-  .catch(function(e){ btn.disabled=false;
-    add("$agent","ai","network error — try again"); });
-}
-btn.addEventListener("click",send);
-inp.addEventListener("keydown",function(e){ if(e.key==="Enter"){ send(); } });
-</script></body></html>""")
+def api_routes(agent: Agent) -> List[Dict[str, Any]]:
+    """Every route as data: method, path and the scopes that guard it."""
+    return [{"method": method, "path": path, "scopes": scopes or ["public"]}
+            for method, path, scopes, _handler in ROUTES]
 
 
 # --------------------------------------------------- public demo chat
 #
 # The website is open to everyone, so this chat runs keyless and with no
 # scopes: the engine's permission gate still applies, so nothing privileged
-# can be triggered from here. A single small shared token bucket keeps the
-# demo modest; real clients use /v1/chat with an owner-issued key, where
-# each key gets its own bucket in the server.
+# can be triggered from a browser. Real clients use /v1/chat with an
+# owner-issued key, where each key gets its own bucket in the server.
+#
+# The demo bucket is PER VISITOR, not one shared pool: with a single shared
+# bucket, one script hammering the page would lock the demo out for every
+# honest visitor (and the 429s would look like the product was broken).
+
+#: How many visitor buckets we keep before pruning the stalest ones.
+_MAX_VISITORS = 4096
 
 
 class _PublicLimiter:
-    """One shared token bucket for the keyless demo chat."""
+    """Token buckets for the keyless demo chat — one per visitor.
 
-    def __init__(self, rate_per_min: int = 10, burst: int = 5) -> None:
+    ``allow()`` with no argument uses a single shared bucket, which is the
+    behaviour the rest of the code (and the test-suite) has always had;
+    ``allow(visitor)`` gives that visitor their own bucket.
+    """
+
+    SHARED = "shared"
+
+    def __init__(self, rate_per_min: int = 12, burst: int = 6,
+                 max_visitors: int = _MAX_VISITORS) -> None:
         self.rate = rate_per_min / 60.0
         self.burst = float(burst)
+        self.max_visitors = max(16, int(max_visitors))
         self._lock = threading.Lock()
-        self._tokens = float(burst)
-        self._last = time.time()
+        # visitor id -> [tokens, last_refill]
+        self._buckets: Dict[str, List[float]] = {}
 
-    def allow(self) -> bool:
+    # ---------------------------------------------------------------- api
+
+    def configure(self, rate_per_min: Optional[float] = None,
+                  burst: Optional[float] = None) -> None:
+        """Apply the owner's configured demo budget (REALAI_DEMO_*)."""
+        if rate_per_min is not None:
+            self.rate = max(0.0, float(rate_per_min) / 60.0)
+        if burst is not None:
+            self.burst = max(0.0, float(burst))
+
+    def allow(self, visitor: Optional[str] = None) -> bool:
+        """Take one token from this visitor's bucket (True = allowed)."""
+        key = str(visitor or self.SHARED)
         now = time.time()
         with self._lock:
-            self._tokens = min(
-                self.burst, self._tokens + (now - self._last) * self.rate)
-            self._last = now
-            if self._tokens < 1.0:
+            if len(self._buckets) >= self.max_visitors and \
+                    key not in self._buckets:
+                self._prune(now)
+            bucket = self._buckets.setdefault(key, [self.burst, now])
+            bucket[0] = min(self.burst,
+                            bucket[0] + (now - bucket[1]) * self.rate)
+            bucket[1] = now
+            if bucket[0] < 1.0:
                 return False
-            self._tokens -= 1.0
+            bucket[0] -= 1.0
             return True
 
+    def reset(self, visitor: Optional[str] = None) -> None:
+        with self._lock:
+            if visitor is None:
+                self._buckets.clear()
+            else:
+                self._buckets.pop(str(visitor), None)
 
-_public_demo_limiter = _PublicLimiter()
+    def visitors(self) -> int:
+        with self._lock:
+            return len(self._buckets)
+
+    # ------------------------------------------------------------- internal
+
+    def _prune(self, now: float) -> None:
+        """Drop the stalest buckets so a long-running server cannot grow
+        without bound. Called with ``self._lock`` held."""
+        stalest = sorted(self._buckets.items(), key=lambda kv: kv[1][1])
+        for key, _bucket in stalest[:max(1, len(stalest) // 2)]:
+            self._buckets.pop(key, None)
+
+
+#: The demo limiter. Tests (and the owner, via REALAI_DEMO_*) may swap or
+#: reconfigure this; :func:`_demo_limiter` keeps both working.
+_DEFAULT_DEMO_LIMITER = _PublicLimiter()
+_public_demo_limiter = _DEFAULT_DEMO_LIMITER
+
+
+def _demo_limiter(cfg: Any = None) -> "_PublicLimiter":
+    """The limiter to use for this request.
+
+    If somebody replaced the module-level limiter we use theirs untouched
+    (that is how the suite simulates an exhausted bucket). Otherwise the
+    owner's configured demo budget is applied to the default instance.
+    """
+    limiter = _public_demo_limiter
+    if limiter is _DEFAULT_DEMO_LIMITER and cfg is not None:
+        limiter.configure(getattr(cfg, "demo_rate_per_min", None),
+                          getattr(cfg, "demo_burst", None))
+    return limiter
+
+
+def visitor_id(ctx: Dict[str, Any]) -> str:
+    """A stable-enough id for the visitor behind a keyless request.
+
+    Serverless and proxied deployments put the real client in
+    ``X-Forwarded-For``; the threaded server injects the peer address. This
+    is a rate-limit hint, not an identity — it is never used for auth and
+    never stored anywhere.
+    """
+    headers = ctx.get("headers") or {}
+    for name in ("x-forwarded-for", "x-real-ip", "cf-connecting-ip"):
+        raw = str(headers.get(name) or "").strip()
+        if raw:
+            first = raw.split(",")[0].strip()
+            if first:
+                return first[:64]
+    return str(ctx.get("client_ip") or "anonymous")
 
 
 def public_chat(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
     """Keyless demo chat behind the public website.
 
-    No API key, no scopes, a 4000-char cap and a small shared rate limit.
-    Programmatic access stays on the gated ``/v1/chat``.
+    No API key, no scopes, a 4000-char cap and a small rate limit *per
+    visitor*. This is the product's conversational surface, so it goes
+    through :meth:`Agent.reply` — multi-turn context for the browser's
+    ``session_id``, memory recall, and honest scope. Programmatic access
+    stays on the gated ``/v1/chat``, which keeps the raw pipeline voice.
     """
     text = str(body.get("message", "")).strip()
     if not text:
         return _err(400, "bad_request", "message is required")
     if len(text) > 4000:
         return _err(400, "bad_request", "message too long (max 4000)")
-    if not _public_demo_limiter.allow():
-        agent.storage.count("chat", "demo_rate_limited")
+
+    visitor = visitor_id(ctx)
+    if not _demo_limiter(agent.cfg).allow(visitor):
+        agent.storage.count("chat", "demo_rate_limited",
+                            detail={"visitor": visitor})
         return _err(429, "rate_limited",
                     "public demo is rate-limited - try again shortly, or "
                     "use /v1/chat with an owner-issued key")
-    res = agent.handle_message(text, sender="website-demo", scopes=[])
+
+    session_id = body.get("session_id")
+    if session_id is not None and not isinstance(session_id, str):
+        return _err(400, "bad_request", "session_id must be a string")
+
+    res = agent.reply(text, session_id=session_id, sender="website-demo",
+                      scopes=[], visitor=visitor)
     return _ok({**res, "request_id": ctx.get("request_id")})
 
 
 def api_index(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
     """Machine-readable index of every route and its required scopes."""
-    routes = []
-    for method, path, scopes, handler in ROUTES:
-        routes.append({
-            "method": method,
-            "path": path,
-            "scopes": scopes or ["public"],
-        })
     return _ok({"agent": agent.mind.snapshot()["agent"],
-                "routes": routes})
+                "routes": api_routes(agent),
+                "pages": ["/", "/developers", "/approve", "/dashboard",
+                          "/logo.svg", "/favicon.ico"],
+                "note": "the browser pages are rendered by realaiagent."
+                        "web_pages; /v1/* needs an owner-issued key"})
 
 
 # ------------------------------------------------------------------- status
@@ -729,6 +693,7 @@ def users_topup(agent: Agent, body: Dict[str, Any], ctx: Dict[str, Any]):
 ROUTES: List[Tuple[str, str, List[str], Handler]] = [
     # (method, path, scopes (empty = public), handler)
     ("GET", "/", [], index_page),
+    ("GET", "/developers", [], developers),
     ("POST", "/public/chat", [], public_chat),
     ("GET", "/api.json", [], api_index),
     ("GET", "/healthz", [], healthz),
