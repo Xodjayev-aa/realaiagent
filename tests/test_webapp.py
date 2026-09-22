@@ -141,6 +141,47 @@ class TestBrandedChatApp(unittest.TestCase):
         self.assertIn('id="burger"', self.page)
         self.assertIn("prefers-reduced-motion", self.page)
 
+    def test_root_has_the_senior_chatgpt_grade_layout(self):
+        # app shell: sidebar + centered empty state + pill composer dock
+        self.assertIn('class="shell"', self.page)
+        self.assertIn('id="hero"', self.page)
+        self.assertIn("What can I help with?", self.page)
+        self.assertIn('class="composer"', self.page)
+        self.assertIn('class="sbtn send"', self.page)
+        self.assertIn("data-msg=", self.page)      # suggestion chips
+        self.assertIn('id="sessfilter"', self.page)  # searchable sidebar
+        self.assertIn('id="agentstatus"', self.page)  # live mood line
+        self.assertIn('id="scrim"', self.page)
+        self.assertIn("100dvh", self.page)
+
+    def test_root_supports_light_and_dark_themes(self):
+        self.assertIn('data-theme="light"', self.page)
+        self.assertIn("[data-theme=\"dark\"]", self.page)
+        self.assertIn("prefers-color-scheme", self.page)  # theme boot
+        self.assertIn("data-themebtn", self.page)         # toggle
+        self.assertIn("realai.theme", self.page)          # persisted
+
+    def test_inline_icons_are_safe_js_strings(self):
+        # the chrome JS splices SVG icons into double-quoted JS literals;
+        # unescaped quotes there used to break the whole page's script
+        self.assertIn(
+            'var ICON_SUN="<svg viewBox=\\"0 0 24 24\\"', self.page)
+        self.assertIn(
+            'var MARK = "<svg viewBox=\\"0 0 64 64\\"', self.page)
+
+    def test_root_carries_the_count_ring_mark(self):
+        # the 0.7.0 mark: an arc with a 72-degree gap + one dot in it
+        self.assertIn('class="mark"', self.page)
+        self.assertIn("A20 20 0 1 1", self.page)   # the open ring
+        self.assertIn('<circle class="md"', self.page)  # the counted dot
+        self.assertIn('cx="43.47" cy="15.62"', self.page)
+        # favicon / logo endpoints serve the tile variant (dark squircle)
+        for path in ("/logo.svg", "/favicon.ico"):
+            _s, _c, body, _x = call(self.app, "GET", path)
+            self.assertIn(b"<rect", body, path)
+            self.assertIn(b'rx="14.5"', body, path)
+            self.assertIn(b"#0f1115", body, path)
+
     def test_page_escapes_the_agent_identity(self):
         self.agent.mind.set_identity(agent_name='<script>alert(1)</script>')
         page = text(call(self.app, "GET", "/")[2])

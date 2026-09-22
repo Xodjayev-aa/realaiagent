@@ -96,7 +96,7 @@ of any kind**. Every byte the browser receives comes from this repo.
 
 | Path | What it is | Access |
 |---|---|---|
-| `/` | **The branded chat app**: its own logo and favicon, a session sidebar (multiple conversations, stored in the browser *and* in the agent's database), markdown rendering, a streaming reveal, a typing indicator, and a mobile layout with a drawer | public, keyless |
+| `/` | **The chat app** (0.7.0: ChatGPT/Gemini-grade): a quiet searchable sidebar of conversations (stored in the browser *and* in the agent's database), a centered empty state with suggestion chips, one pill composer, clean bubbles with copy/read-aloud actions, a live mood line, markdown, a streaming reveal, light **and** dark themes, and a mobile drawer | public, keyless |
 | `/developers` | **The developer portal**: an endpoint table generated live from the same route registry `/api.json` serves (so the docs cannot drift from the code), scope pills, limits, status codes, a copyable `curl`, and the key-request form | public |
 | `/approve` | **Your approval inbox**: every PENDING client with one-tap **Approve** (the minted key is shown exactly once), **Deny**, **Unban** and **VIP** | web-token gated |
 | `/dashboard` | The live telemetry wall — 15 SSE topics | web-token gated |
@@ -106,6 +106,23 @@ of any kind**. Every byte the browser receives comes from this repo.
 The split is deliberate and it is enforced in code, not in prose: the
 website is open to everyone, and the machine belongs to the owner. `/v1/*`
 still answers `401` without a key.
+
+### The interface (0.7.0) — senior-level, on purpose
+
+The front end was rebuilt to the standard of ChatGPT/Gemini: a two-column
+app shell (a quiet 268px sidebar with **searchable** conversations and a
+live "mood · autonomy" line; the thread docked over a single pill
+composer), a centered empty state with **suggestion chips**, user
+messages as soft right-aligned pills, assistant answers as clean full-width
+text with hover actions (copy, read aloud), a bouncing-dot typing state,
+and a **light/dark theme** — system default, one tap to flip, stored in
+`localStorage`. The document pages (developers, approvals, telemetry) share
+the same design system: sticky header, cards, tables, ink buttons.
+
+The mark is new too: a **count ring** — a ring with one opening and one
+dot in it, a thought being counted — hand-written SVG in
+`web_pages.py` (no external asset), which doubles as the favicon
+(`/logo.svg` and `/favicon.ico` serve the tile variant).
 
 ### A voice, not a status report
 
