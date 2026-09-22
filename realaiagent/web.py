@@ -536,6 +536,7 @@ class WebApp:
     def _dashboard(self, query: Dict[str, str],
                    headers: Optional[Dict[str, str]] = None
                    ) -> Tuple[int, str, bytes, Dict[str, str]]:
+        from . import web_pages
         allowed, reason, retry = self._web_gate(query, headers or {},
                                                 "dashboard")
         if not allowed:
@@ -544,8 +545,13 @@ class WebApp:
         topics_js = json.dumps(
             [{"name": n, "description": d} for n, d in TOPICS])
         html = _DASHBOARD_HTML.substitute(
-            agent=snap["agent"], topics=topics_js,
-            token=self.agent.cfg.web_token)
+            agent=web_pages.esc(snap["agent"]),
+            mark=web_pages._logo_mark(snap["agent"]),
+            topics=topics_js,
+            token=web_pages.esc(self.agent.cfg.web_token),
+            css=web_pages._CSS,
+            chrome=web_pages._chrome_js(),
+            burger=web_pages.IC_BURGER)
         body = html.encode("utf-8")
         return 200, "text/html; charset=utf-8", body, {}
 
@@ -710,33 +716,32 @@ class WebApp:
 
     def _token_gate(self) -> Tuple[int, str, bytes, Dict[str, str]]:
         """A browser-friendly 401: enter the web token, then see the inbox."""
+        from . import web_pages
         html = (
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<!doctype html><html lang=\"en\" data-theme=\"light\"><head>"
+            "<meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,"
             "initial-scale=1\"><title>Approvals — token required</title>"
-            "<style>body{background:#0b0e14;color:#d7dce5;margin:0;"
-            "font:15px/1.6 ui-sans-serif,system-ui,sans-serif;"
-            "display:flex;align-items:center;justify-content:center;"
-            "min-height:100vh}form{background:#12161f;border:1px solid "
-            "#1f2633;border-radius:14px;padding:22px;max-width:420px;"
-            "width:calc(100% - 40px)}h1{font-size:19px;margin:0 0 6px}"
-            "p{color:#8b94a7;font-size:13.5px;margin:0 0 14px}"
-            "input{width:100%;background:#0e1219;color:#d7dce5;border:1px "
-            "solid #1f2633;border-radius:10px;padding:10px 12px;font:inherit;"
-            "box-sizing:border-box}button{margin-top:12px;width:100%;"
-            "background:#1d2a44;color:#fff;border:1px solid #7aa2f7;"
-            "border-radius:10px;padding:10px;font:inherit;cursor:pointer}"
-            "a{color:#7aa2f7}</style></head><body>"
-            "<form method=\"get\" action=\"/approve\">"
+            "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/logo.svg\">"
+            "<meta name=\"theme-color\" content=\"#ffffff\">"
+            "<script>" + web_pages.THEME_BOOT + "</script>"
+            "<style>" + web_pages._CSS + "</style></head>"
+            "<body class=\"page\">"
+            "<div class=\"gate-wrap\"><div class=\"gate-card\">"
+            + web_pages.MARK_DECORATIVE +
             "<h1>Owner approval inbox</h1>"
             "<p>This page is gated by <code>REALAI_WEB_TOKEN</code>. Enter it "
             "to continue — the token stays in the URL of your own browser "
             "and is never stored by the agent.</p>"
+            "<form method=\"get\" action=\"/approve\">"
             "<input name=\"token\" type=\"password\" autofocus "
             "placeholder=\"web token\" autocomplete=\"off\">"
-            "<button type=\"submit\">Open the inbox</button>"
-            "<p style=\"margin-top:14px\"><a href=\"/\">← back to the chat "
-            "app</a></p></form></body></html>")
+            "<button class=\"btn btn-p\" type=\"submit\">Open the inbox"
+            "</button></form>"
+            "<p class=\"gate-back\"><a href=\"/\">← back to the chat "
+            "app</a></p></div></div>"
+            "<script>" + web_pages._chrome_js() + "</script>"
+            "</body></html>")
         return 401, "text/html; charset=utf-8", html.encode("utf-8"), {
             "Cache-Control": "no-store"}
 
@@ -749,108 +754,132 @@ def _int_or(raw: Any, default: int) -> int:
 
 
 _DASHBOARD_HTML = Template("""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="en" data-theme="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>$agent — RealAI live</title>
-<style>
- :root { color-scheme: dark; }
- body { background:#0b0e14; color:#d7dce5; font:14px/1.5
-        ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif;
-        margin:0; padding:24px 16px; }
- main { max-width: 980px; margin: 0 auto; }
- h1 { font-size: 22px; margin: 0 0 2px; }
- .sub { color:#8b94a7; margin-bottom: 14px; font-size: 13px; }
- .bar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
- .stat { color:#3fd68f; font-weight:600; }
- .stat.err { color:#f5c542; }
- .cnt { color:#8b94a7; font-size:12.5px; }
- .topics { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
- button.t { background:#12161f; color:#d7dce5; border:1px solid #1f2633;
-            border-radius:8px; padding:5px 10px; font-size:12.5px;
-            cursor:pointer; }
- button.t:hover { border-color:#33405a; }
- button.t.on { background:#1d2a44; border-color:#7aa2f7; color:#fff; }
- #feed { background:#0e1219; border:1px solid #1f2633; border-radius:12px;
-         padding:12px 14px; height: 62vh; overflow-y:auto;
-         font:12.5px/1.7 ui-monospace,SFMono-Regular,monospace; }
- .row { border-bottom:1px solid #151b26; padding:2px 0; word-break:break-all; }
- .seq { color:#5c6577; } .tp { color:#7aa2f7; font-weight:600; }
- code { color:#a8b2c5; }
- footer { color:#5c6577; font-size:12px; margin-top:12px; }
-</style></head><body><main>
- <h1>🤖 $agent — RealAI · live</h1>
- <div class="sub">owner-controlled · everything counted ·
-  pure Python stdlib · Vercel free tier (SSE windows auto-reconnect)</div>
- <div class="bar">
-   <span class="stat" id="stat">starting…</span>
-   <span class="cnt" id="cnt"></span>
+<title>$agent — RealAI live telemetry</title>
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="alternate icon" href="/favicon.ico">
+<meta name="theme-color" content="#ffffff">
+<style>$css</style></head><body class="page">
+<header class="top"><div class="top-in">
+ <a class="brand" href="/">$mark<span>$agent</span></a>
+ <div class="dstat"><span class="live off" id="dot"></span>
+  <span id="stat">starting…</span></div>
+ <button class="iconbtn menu" id="burger" type="button" aria-label="menu"
+   aria-expanded="false">$burger</button>
+ <nav class="links" id="links">
+  <a href="/">Chat</a>
+  <a href="/developers">Developers</a>
+  <a href="/dashboard" class="here">Telemetry</a>
+  <a href="/approve">Approvals</a>
+  <a href="/api.json">API</a>
+  <button class="iconbtn" data-themebtn type="button"
+   title="toggle theme"></button>
+ </nav>
+</div></header>
+<main class="page-main">
+ <h1>Live telemetry</h1>
+ <p class="tag">15 Server-Sent-Event topics, each served as a bounded window
+  that the browser reconnects gaplessly (EventSource resends
+  <code>Last-Event-ID</code>). Everything the agent does is counted — watch
+  the ledger move.</p>
+ <div class="statrow">
+  <div class="tile"><div class="k">uptime</div>
+   <div class="big" id="s-uptime">—</div></div>
+  <div class="tile"><div class="k">events counted</div>
+   <div class="big" id="s-total">—</div></div>
+  <div class="tile"><div class="k">autonomy</div>
+   <div class="big" id="s-auto">—</div></div>
+  <div class="tile"><div class="k">mood</div>
+   <div class="big" id="s-mood">—</div></div>
  </div>
- <div class="topics" id="topics"></div>
- <div id="feed"></div>
- <footer>15 SSE topics · bounded windows · everything is counted</footer>
+ <div class="card">
+  <div class="k">stream one topic</div>
+  <div class="dtopics" id="topics"></div>
+  <div class="dfeed" id="feed"></div>
+ </div>
 </main>
+$chrome
 <script>
-const TOPICS = $topics;
-const TOKEN = "$token";
-const params = TOKEN ? ("?token=" + TOKEN) : "";
-const feed = document.getElementById("feed");
-const stat = document.getElementById("stat");
-const cnt = document.getElementById("cnt");
-const box = document.getElementById("topics");
-let es = null;
-
-function line(html) {
-  const div = document.createElement("div");
+var TOPICS = $topics;
+var TOKEN = "$token";
+var params = TOKEN ? ("?token=" + TOKEN) : "";
+var feed = document.getElementById("feed");
+var stat = document.getElementById("stat");
+var dot = document.getElementById("dot");
+var box = document.getElementById("topics");
+var es = null;
+function esc(s){
+  return String(s).replace(/[&<>"']/g, function(ch){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch];
+  });
+}
+function uptime(s){
+  s = Math.max(0, Math.round(s || 0));
+  if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h + "h " + m + "m";
+}
+function setStat(t, on){
+  stat.textContent = t;
+  dot.className = "live" + (on ? "" : " off");
+}
+function line(html){
+  var div = document.createElement("div");
   div.className = "row";
   div.innerHTML = html;
   feed.appendChild(div);
-  while (feed.children.length > 300) feed.removeChild(feed.firstChild);
+  while (feed.children.length > 400) feed.removeChild(feed.firstChild);
   feed.scrollTop = feed.scrollHeight;
 }
-function esc(s) {
-  return String(s).replace(/[&<>"]/g,
-    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function updateFrom(d){
+  if (!d) return;
+  if (d.uptime_s != null)
+    document.getElementById("s-uptime").textContent = uptime(d.uptime_s);
+  if (d.grand_total != null)
+    document.getElementById("s-total").textContent =
+      Number(d.grand_total).toLocaleString();
+  if (d.autonomy != null)
+    document.getElementById("s-auto").textContent =
+      d.autonomy ? "on" : "paused";
+  if (d.mood && d.mood.note)
+    document.getElementById("s-mood").textContent = d.mood.note;
 }
-function open(topic) {
-  if (es) { es.close(); es = null; }
-  document.querySelectorAll("button.t")
-    .forEach(b => b.classList.toggle("on", b.dataset.t === topic));
-  stat.textContent = "connecting…";
-  stat.classList.remove("err");
+function open(topic){
+  if (es){ es.close(); es = null; }
+  var chips = box.querySelectorAll(".tchip");
+  Array.prototype.forEach.call(chips, function(b){
+    b.classList.toggle("on", b.getAttribute("data-t") === topic);
+  });
+  setStat("connecting…", false);
+  feed.innerHTML = "";
   es = new EventSource("/stream/" + topic + params);
-  const names = ["open", "window"].concat(TOPICS.map(t => t.name));
-  names.forEach(ev => es.addEventListener(ev, e => {
-    let d = {};
-    try { d = JSON.parse(e.data); } catch (_) {}
-    if (ev === "open") {
-      stat.textContent = "live — " + topic;
-      return;
-    }
-    if (ev === "window") {
-      stat.textContent = "window closed — reconnecting…";
-      return;
-    }
-    if (ev === "health" || ev === "status") {
-      cnt.textContent = "grand_total " + (d.grand_total == null ? "?"
-        : d.grand_total) + " · uptime " + Math.round(d.uptime_s || 0)
-        + "s · autonomy " + (d.autonomy ? "ON" : "off");
-    }
-    line("<span class='seq'>" + (e.lastEventId || "") + "</span> "
-      + "<span class='tp'>" + esc(ev) + "</span> "
-      + "<code>" + esc(JSON.stringify(d)) + "</code>");
-  }));
-  es.onerror = () => {
-    stat.textContent = "reconnecting…";
-    stat.classList.add("err");
-  };
+  var names = ["open", "window"]
+    .concat(TOPICS.map(function(t){ return t.name; }));
+  names.forEach(function(ev){
+    es.addEventListener(ev, function(e){
+      var d = {};
+      try { d = JSON.parse(e.data); } catch (_) {}
+      if (ev === "open"){ setStat("live — " + topic, true); return; }
+      if (ev === "window"){
+        setStat("window closed — reconnecting…", false);
+        return;
+      }
+      updateFrom(d);
+      line("<span class='seq'>" + esc(e.lastEventId || "") + "</span> "
+        + "<span class='tp'>" + esc(ev) + "</span> "
+        + "<code>" + esc(JSON.stringify(d)) + "</code>");
+    });
+  });
+  es.onerror = function(){ setStat("reconnecting…", false); };
 }
-TOPICS.forEach(t => {
-  const b = document.createElement("button");
-  b.className = "t";
-  b.dataset.t = t.name;
+TOPICS.forEach(function(t){
+  var b = document.createElement("button");
+  b.className = "tchip"; b.type = "button";
+  b.setAttribute("data-t", t.name);
   b.title = t.description;
   b.textContent = t.name;
-  b.addEventListener("click", () => open(t.name));
+  b.addEventListener("click", function(){ open(t.name); });
   box.appendChild(b);
 });
 open("all");

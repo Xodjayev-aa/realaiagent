@@ -1,19 +1,20 @@
-"""The product's own pages: branded chat app, developer portal, owner inbox.
+"""The product's own pages: the chat app, developer portal, owner inbox.
 
 Server-rendered HTML from the standard library — ``string.Template`` for
 substitution, no template engine, no build step, no CDN, no analytics, no
 third-party font or script. Everything the browser gets comes from this
 repo, which is the same rule the brain obeys: nothing external.
 
-Three pages make RealAI a product rather than an API with a demo attached:
+0.7.0 — a senior-level interface, ChatGPT/Gemini-grade:
 
 =============== =========================================================
-``/``            the branded chat app — own logo and favicon, session
-                 sidebar, markdown, streaming reveal, typing state,
-                 mobile layout
-``/developers``  the portal — a live endpoint table built from the real
-                 route registry (the same data ``/api.json`` serves) plus
-                 the key-request form
+``/``            the chat app — a count-ring mark, a quiet sidebar with
+                 searchable conversations, a centered empty state with
+                 suggestion chips, a single pill composer, clean bubbles,
+                 light and dark themes (system default, toggleable)
+``/developers``  the portal — live endpoint table from the real route
+                 registry (the same data ``/api.json`` serves) plus the
+                 key-request form
 ``/approve``     the owner's approval inbox — web-token gated, one-tap
                  approve (key shown exactly once), deny, unban, VIP
 =============== =========================================================
@@ -21,6 +22,10 @@ Three pages make RealAI a product rather than an API with a demo attached:
 The chat app talks to ``POST /public/chat``: keyless, rate-limited per
 visitor, no scopes — so nothing privileged can be reached from a browser.
 ``/v1/*`` stays behind owner-issued keys.
+
+The mark: a "count ring" — a ring with one opening and one dot, a thought
+being counted. Hand-written SVG in this module; the same bytes become the
+favicon. No external asset is ever fetched, embedded or linked.
 
 Deliberate omissions: no cookies (sessions live in ``localStorage`` and in
 the database), no external requests of any kind, and no secret is ever
@@ -39,11 +44,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 #: not listed here still renders — with an em dash — because the table is
 #: driven by the live route registry, not by this dict.
 ENDPOINT_DOCS: Dict[str, str] = {
-    "/": "this app — the branded chat page (public)",
+    "/": "this app — the chat page (public)",
     "/public/chat": "keyless demo chat: {\"message\": \"...\", "
                     "\"session_id\": \"...\"}",
     "/developers": "the developer portal (public)",
-    "/logo.svg": "the wordmark/logo, also used as the favicon",
+    "/logo.svg": "the mark (SVG), also used as the favicon",
     "/favicon.ico": "favicon (SVG payload, served on the classic path too)",
     "/api.json": "machine-readable index of every route and its scopes",
     "/healthz": "liveness: agent name, version, uptime, mood",
@@ -96,44 +101,64 @@ def esc(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 
+# ---------------------------------------------------------------------- mark
+# The "count ring": a ring with one opening, one dot in it — a thought being
+# counted. Geometry: center (32,32), radius 20, stroke 7, round caps; the
+# gap is 72 degrees centred at -55 degrees (upper right) and the dot sits in
+# the middle of the gap. viewBox 0 0 64 64 so it scales from favicon to hero.
+
+#: Ring + dot as a bare <g> — colours via attributes (endpoint SVGs) or via
+#: classes (in-page SVGs, where the dot picks up the theme accent).
+_MARK_PATH = ("M50.91 25.47A20 20 0 1 1 31.65 12")
+
+_MARK_INNER_ATTR = (
+    '<path d="' + _MARK_PATH + '" fill="none" stroke-width="7" '
+    'stroke-linecap="round" stroke="@@RING@@"/>'
+    '<circle cx="43.47" cy="15.62" r="5" fill="@@DOT@@"/>'
+)
+
+
 def _logo_mark(agent_name: str = "REAL") -> str:
-    """The product's own mark: a local, hand-written SVG (no external asset).
+    """The product's own mark, adaptive to the page theme.
 
-    A rounded square with the agent's initial and a small 'counted' dot —
-    the dot is the ledger, which is the thing this project never stops
-    talking about.
+    Ring strokes ``currentColor``; the dot takes ``--accent`` from the CSS
+    (see ``.mark .md``). The agent's name appears in the wordmark next to
+    the mark, the way a name sits next to a company glyph.
     """
-    initial = (agent_name or "R").strip()[:1].upper() or "R"
     return (
-        '<svg viewBox="0 0 64 64" width="34" height="34" role="img" '
-        'aria-label="' + esc(agent_name) + ' logo" '
+        '<svg viewBox="0 0 64 64" class="mark" role="img" '
+        'aria-label="' + esc(agent_name) + ' mark" '
         'xmlns="http://www.w3.org/2000/svg">'
-        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
-        '<stop offset="0" stop-color="#7aa2f7"/><stop offset="1" '
-        'stop-color="#3fd68f"/></linearGradient></defs>'
-        '<rect x="3" y="3" width="58" height="58" rx="16" fill="#0e1219" '
-        'stroke="url(#g)" stroke-width="3"/>'
-        '<text x="32" y="42" text-anchor="middle" font-family="ui-sans-serif,'
-        'system-ui,sans-serif" font-size="30" font-weight="700" '
-        'fill="url(#g)">' + esc(initial) + '</text>'
-        '<circle cx="48" cy="17" r="4.5" fill="#3fd68f"/></svg>')
+        '<path class="mr" d="' + _MARK_PATH + '" fill="none" '
+        'stroke="currentColor" stroke-width="7" stroke-linecap="round"/>'
+        '<circle class="md" cx="43.47" cy="15.62" r="5"/></svg>'
+    )
 
 
-LOGO_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" '
-            'width="64" height="64"><defs><linearGradient id="g" x1="0" '
-            'y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7aa2f7"/>'
-            '<stop offset="1" stop-color="#3fd68f"/></linearGradient>'
-            '</defs><rect x="3" y="3" width="58" height="58" rx="16" '
-            'fill="#0e1219" stroke="url(#g)" stroke-width="3"/><text x="32" '
-            'y="42" text-anchor="middle" font-family="ui-sans-serif,'
-            'system-ui,sans-serif" font-size="30" font-weight="700" '
-            'fill="url(#g)">R</text><circle cx="48" cy="17" r="4.5" '
-            'fill="#3fd68f"/></svg>')
+#: The mark as a self-contained app icon: dark tile, light ring, accent
+#: dot. This is what ``/logo.svg`` and ``/favicon.ico`` serve, so it reads
+#: on any browser tab or OS context.
+LOGO_SVG = (
+    '<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">'
+    '<rect x="0" y="0" width="64" height="64" rx="14.5" fill="#0f1115"/>'
+    + _MARK_INNER_ATTR.replace("@@RING@@", "#f4f6f8")
+                      .replace("@@DOT@@", "#6c9bff")
+    + "</svg>"
+)
+
+#: Decorative (aria-hidden) mark for JS-built avatars — no theme text.
+MARK_DECORATIVE = (
+    '<svg viewBox="0 0 64 64" class="mark" aria-hidden="true" '
+    'xmlns="http://www.w3.org/2000/svg">'
+    '<path class="mr" d="' + _MARK_PATH + '" fill="none" '
+    'stroke="currentColor" stroke-width="7" stroke-linecap="round"/>'
+    '<circle class="md" cx="43.47" cy="15.62" r="5"/></svg>'
+)
 
 
 def favicon_bytes(agent_name: str = "REAL") -> bytes:
     """The favicon payload — an SVG we generate ourselves."""
-    return _logo_mark(agent_name).encode("utf-8")
+    return LOGO_SVG.encode("utf-8")
 
 
 # ------------------------------------------------------------------ markdown
@@ -252,200 +277,493 @@ def markdown_to_html(text: str) -> str:
     return "\n".join(out)
 
 
-# --------------------------------------------------------------------- shell
+# --------------------------------------------------------------------- icons
+# Hand-drawn 24x24 line icons: 1.7-2px strokes, round caps, currentColor.
+
+def _ic(inner: str, size: int = 16, width: str = "1.7") -> str:
+    return (f'<svg viewBox="0 0 24 24" width="{size}" height="{size}" '
+            f'fill="none" stroke="currentColor" stroke-width="{width}" '
+            f'stroke-linecap="round" stroke-linejoin="round" '
+            f'aria-hidden="true">{inner}</svg>')
+
+
+IC_PLUS = _ic('<path d="M12 5v14M5 12h14"/>', 17)
+IC_SEARCH = _ic('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2"/>', 15)
+IC_TRASH = _ic('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12h10l1-12M9 7V5h6v2"/>',
+               14)
+IC_SEND = _ic('<path d="M12 19V5M5 12l7-7 7 7"/>', 18, "2")
+IC_MIC = _ic('<path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/>'
+             '<path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/>', 18)
+IC_SUN = _ic('<circle cx="12" cy="12" r="4"/>'
+             '<path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5 5l1.4 1.4'
+             'M17.6 17.6L19 19M19 5l-1.4 1.4M6.4 17.6L5 19"/>', 17)
+IC_MOON = _ic('<path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a7 7 0 0 0 9.7 9.7z"/>'
+              , 17)
+IC_CHEV_L = _ic('<path d="M15 6l-6 6 6 6"/>', 17)
+IC_BURGER = _ic('<path d="M4 7h16M4 12h16M4 17h16"/>', 19, "1.8")
+IC_COPY = _ic('<rect x="9" y="9" width="11" height="11" rx="2"/>'
+              '<path d="M5 15V6a2 2 0 0 1 2-2h9"/>', 15)
+IC_CHECK = _ic('<path d="M5 13l4 4L19 7"/>', 15, "2")
+IC_SPEAK = _ic('<path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4z"/>'
+               '<path d="M16.5 9a4.5 4.5 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>',
+               15)
+IC_DL = _ic('<path d="M12 4v11M7 11l5 5 5-5M5 20h14"/>', 15)
+IC_SPARK = _ic('<path d="M12 3l2.1 5.9L20 11l-5.9 2.1L12 19l-2.1-5.9L4 11'
+               'l5.9-2.1z"/>', 16)
+IC_BUBBLE = _ic('<path d="M21 14a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13'
+                'a2 2 0 0 1 2 2z"/>', 16)
+IC_IMG = _ic('<rect x="3" y="5" width="18" height="14" rx="2.5"/>'
+             '<circle cx="8.7" cy="10" r="1.6"/>'
+             '<path d="M21 15.5L16 10.5 7 19"/>', 16)
+IC_SLIDES = _ic('<rect x="3" y="4" width="18" height="12" rx="2"/>'
+                '<path d="M12 16v4M8.5 20h7"/>', 16)
+IC_CODE = _ic('<path d="M8.5 8.5L5 12l3.5 3.5M15.5 8.5L19 12l-3.5 3.5"/>',
+              16)
+IC_PULSE = _ic('<path d="M3 12h4l3 7 4-14 3 7h4"/>', 16)
+IC_USER = _ic('<circle cx="9.5" cy="7.5" r="3.5"/>'
+              '<path d="M3.5 20v-.5a5.5 5.5 0 0 1 5.5-5.5h1a5.5 5.5 0 0 1 5.5 '
+              '5.5v.5M16 4.6a3.5 3.5 0 0 1 0 5.8M18.5 14.6a5.5 5.5 0 0 1 2 '
+              '4.4v1"/>', 16)
+IC_API = _ic('<path d="M6 16l-3-4 3-4M18 8l3 4-3 4M13.5 6l-3 12"/>', 16)
+
+
+# ----------------------------------------------------------------------- css
+#: The whole design system. Light theme is the default; ``data-theme="dark"``
+#: on <html> flips it. The chat app (body.chat) is a 100dvh two-column shell
+#: (quiet sidebar + composer docked under the thread); the document pages
+#: (body.page) share the same tokens under a sticky header.
 
 _CSS = """
- :root { color-scheme: dark;
-   --bg:#0b0e14; --panel:#12161f; --panel2:#0e1219; --line:#1f2633;
-   --ink:#d7dce5; --dim:#8b94a7; --faint:#5c6577;
-   --blue:#7aa2f7; --green:#3fd68f; --amber:#f5c542; --red:#f2777a; }
- * { box-sizing:border-box; }
- body { background:var(--bg); color:var(--ink); margin:0;
-   font:15px/1.6 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif;
-   -webkit-text-size-adjust:100%; }
- a { color:var(--blue); text-decoration:none; }
- a:hover { text-decoration:underline; }
- code, pre, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
- code { background:#1a2030; padding:1px 6px; border-radius:6px;
-   font-size:.9em; color:#a8b2c5; }
- pre { background:var(--panel2); border:1px solid var(--line);
-   border-radius:10px; padding:12px; overflow-x:auto; font-size:12.5px; }
- pre code { background:none; padding:0; }
- /* ---------- brand header ---------- */
- header.top { position:sticky; top:0; z-index:20; background:rgba(11,14,20,.92);
-   backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
- .topin { max-width:1120px; margin:0 auto; padding:10px 18px; display:flex;
-   align-items:center; gap:12px; }
- .brand { display:flex; align-items:center; gap:10px; font-weight:700;
-   font-size:17px; letter-spacing:.2px; }
- .brand svg { display:block; }
- .brand .dot { color:var(--green); }
- nav.links { margin-left:auto; display:flex; gap:6px; align-items:center;
-   flex-wrap:wrap; }
- nav.links a { color:var(--dim); padding:6px 10px; border-radius:9px;
-   font-size:13.5px; border:1px solid transparent; }
- nav.links a:hover { color:var(--ink); border-color:var(--line);
-   text-decoration:none; background:var(--panel); }
- nav.links a.here { color:#fff; background:#1d2a44; border-color:var(--blue); }
- button.burger { display:none; margin-left:auto; background:var(--panel);
-   color:var(--ink); border:1px solid var(--line); border-radius:9px;
-   padding:7px 10px; font-size:15px; cursor:pointer; }
- main { max-width:1120px; margin:0 auto; padding:22px 18px 40px; }
- h1 { font-size:26px; margin:0 0 6px; }
- h2 { font-size:17px; margin:26px 0 10px; }
- .tag { color:var(--dim); margin:0 0 20px; max-width:70ch; }
- .tag b { color:var(--green); }
- .card { background:var(--panel); border:1px solid var(--line);
-   border-radius:14px; padding:16px 18px; margin-bottom:16px; }
- .k { color:var(--dim); font-size:11.5px; text-transform:uppercase;
-   letter-spacing:.09em; margin-bottom:10px; font-weight:600; }
- .grid { display:grid; gap:12px;
-   grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); }
- .tile { background:var(--panel2); border:1px solid var(--line);
-   border-radius:11px; padding:12px 13px; }
- .tile h3 { margin:0 0 5px; font-size:14px; }
- .tile p { margin:0; color:var(--dim); font-size:12.8px; }
- .ok { color:var(--green); } .warn { color:var(--amber); }
- .bad { color:var(--red); } .dim { color:var(--dim); }
- table { width:100%; border-collapse:collapse; font-size:13px; }
- th { text-align:left; color:var(--dim); font-size:11.5px;
-   text-transform:uppercase; letter-spacing:.07em; padding:6px 9px;
-   border-bottom:1px solid var(--line); }
- td { padding:7px 9px; border-top:1px solid var(--line); vertical-align:top; }
- tr:hover td { background:#141926; }
- .m { color:var(--blue); font-family:ui-monospace,monospace;
-   white-space:nowrap; font-size:12.5px; }
- .p { color:var(--ink); font-family:ui-monospace,monospace; font-size:12.5px; }
- .pill { display:inline-block; padding:1px 7px; border-radius:999px;
-   font-size:11px; border:1px solid var(--line); color:var(--dim);
-   background:var(--panel2); }
- .pill.pub { color:var(--green); border-color:#1f4433; }
- .pill.own { color:var(--amber); border-color:#4a3d16; }
- input, textarea, select { background:var(--panel2); color:var(--ink);
-   border:1px solid var(--line); border-radius:10px; padding:10px 12px;
-   font:inherit; width:100%; }
- input:focus, textarea:focus { outline:none; border-color:#33405a; }
- label { display:block; color:var(--dim); font-size:12px; margin:0 0 5px; }
- .field { margin-bottom:12px; }
- button.act { background:#1d2a44; color:#fff; border:1px solid var(--blue);
-   border-radius:10px; padding:9px 15px; font:inherit; font-size:13.5px;
-   cursor:pointer; }
- button.act:hover { background:#24345a; }
- button.act:disabled { opacity:.5; cursor:progress; }
- button.ghost { background:var(--panel2); color:var(--ink);
-   border:1px solid var(--line); border-radius:10px; padding:8px 13px;
-   font:inherit; font-size:13px; cursor:pointer; }
- button.ghost:hover { border-color:#33405a; }
- button.danger { background:#2a1a1c; border-color:#5d2b2e; color:#f2b8ba; }
- button.good { background:#152e24; border-color:#2c6b4c; color:#b9f0d6; }
- .hint { color:var(--faint); font-size:12.3px; margin-top:8px; }
- .note { border-left:3px solid var(--blue); background:var(--panel2);
-   padding:10px 13px; border-radius:0 10px 10px 0; color:var(--dim);
-   font-size:13px; margin:12px 0; }
- .note.warn { border-color:var(--amber); }
- .note.good { border-color:var(--green); }
- footer { color:var(--faint); font-size:12.5px; margin-top:22px;
-   border-top:1px solid var(--line); padding-top:14px; }
- /* ---------- chat layout ---------- */
- .chatwrap { display:grid; grid-template-columns:250px 1fr; gap:16px;
-   align-items:start; }
- aside.side { background:var(--panel); border:1px solid var(--line);
-   border-radius:14px; padding:12px; position:sticky; top:64px;
-   max-height:calc(100vh - 90px); display:flex; flex-direction:column; }
- aside.side .k { margin-bottom:8px; }
- #sessions { overflow-y:auto; flex:1; margin:8px 0; }
- .sess { display:flex; align-items:center; gap:6px; padding:8px 9px;
-   border-radius:9px; cursor:pointer; border:1px solid transparent; }
- .sess:hover { background:var(--panel2); border-color:var(--line); }
- .sess.on { background:#1d2a44; border-color:var(--blue); }
- .sess .t { flex:1; overflow:hidden; text-overflow:ellipsis;
-   white-space:nowrap; font-size:13px; }
- .sess .x { color:var(--faint); background:none; border:none; cursor:pointer;
-   font-size:14px; padding:0 3px; }
- .sess .x:hover { color:var(--red); }
- section.chat { background:var(--panel); border:1px solid var(--line);
-   border-radius:14px; overflow:hidden; display:flex; flex-direction:column;
-   height:calc(100vh - 150px); min-height:420px; }
- #log { flex:1; overflow-y:auto; padding:18px; background:var(--panel2);
-   scroll-behavior:smooth; }
- .msg { margin-bottom:16px; display:flex; gap:10px; }
- .msg .av { flex:0 0 28px; height:28px; border-radius:8px; display:flex;
-   align-items:center; justify-content:center; font-size:12px;
-   font-weight:700; border:1px solid var(--line); background:#131a26; }
- .msg.me { flex-direction:row-reverse; }
- .msg.me .av { color:var(--blue); }
- .msg.ai .av { color:var(--green); }
- .bub { max-width:min(72ch,86%); }
- .who { font-size:10.5px; text-transform:uppercase; letter-spacing:.07em;
-   color:var(--faint); margin-bottom:3px; }
- .msg.me .who { text-align:right; }
- .body { background:#141a26; border:1px solid var(--line);
-   border-radius:12px; padding:10px 13px; word-break:break-word; }
- .msg.me .body { background:#182338; border-color:#26365a; }
- .body p { margin:0 0 8px; } .body p:last-child { margin:0; }
- .body ul, .body ol { margin:6px 0 8px; padding-left:20px; }
- .body li { margin:2px 0; }
- .body h3, .body h4, .body h5, .body h6 { margin:10px 0 5px; font-size:14px; }
- .body pre { margin:8px 0; }
- .cursor { display:inline-block; width:7px; background:var(--green);
-   animation:blink 1s steps(2) infinite; }
- @keyframes blink { 50% { opacity:0; } }
- #typing { display:none; align-items:center; gap:8px; padding:0 18px 8px;
-   color:var(--dim); font-size:12.5px; background:var(--panel2); }
- #typing.on { display:flex; }
- #typing .d { width:6px; height:6px; border-radius:50%; background:var(--green);
-   animation:bob 1.1s infinite ease-in-out; }
- #typing .d:nth-child(2) { animation-delay:.15s; }
- #typing .d:nth-child(3) { animation-delay:.3s; }
- @keyframes bob { 0%,60%,100% { transform:translateY(0); opacity:.5; }
-   30% { transform:translateY(-4px); opacity:1; } }
- .att { margin-top:8px; }
- img.inl { max-width:100%; max-height:420px; border-radius:10px; display:block;
-   margin:6px 0; border:1px solid var(--line); }
- .att img { max-width:100%; max-height:420px; border-radius:10px;
-   border:1px solid var(--line); display:block; }
- .att audio { width:100%; max-width:420px; display:block; }
- .tts { background:none; border:0; cursor:pointer; opacity:.55; font-size:14px;
-   padding:2px 4px; margin-top:4px; } .tts:hover { opacity:1; }
- #mic.rec { background:#b91c1c; color:#fff; animation:pulse 1s infinite; }
- @keyframes pulse { 50% { opacity:.6; } }
- .composer { display:flex; gap:8px; padding:12px; border-top:1px solid
-   var(--line); background:var(--panel); align-items:flex-end; }
- .composer textarea { resize:none; min-height:44px; max-height:180px;
-   line-height:1.45; }
- /* ---------- key reveal ---------- */
- #keybox { display:none; }
- #keybox.on { display:block; }
- #keybox .kv { font-family:ui-monospace,monospace; font-size:14px;
-   background:#0a1a12; border:1px solid #2c6b4c; color:#b9f0d6;
-   padding:11px 12px; border-radius:10px; word-break:break-all; }
- .rowbtns { display:flex; gap:6px; flex-wrap:wrap; }
- @media (max-width: 860px) {
-   .chatwrap { grid-template-columns:1fr; }
-   aside.side { position:fixed; inset:56px 0 0 0; z-index:30; max-height:none;
-     border-radius:0; transform:translateX(-102%);
-     transition:transform .18s ease; }
-   aside.side.open { transform:none; }
-   button.burger { display:block; }
-   nav.links { display:none; position:absolute; top:56px; right:10px;
-     background:var(--panel); border:1px solid var(--line);
-     border-radius:12px; padding:8px; flex-direction:column;
-     align-items:stretch; margin:0; }
-   nav.links.open { display:flex; }
-   section.chat { height:calc(100vh - 190px); min-height:340px; }
-   .bub { max-width:92%; }
-   main { padding:14px 12px 30px; }
- }
- @media (prefers-reduced-motion: reduce) {
-   .cursor, #typing .d { animation:none; }
-   #log { scroll-behavior:auto; }
- }
+:root {
+  color-scheme: light;
+  --bg:#ffffff;          /* chat main / cards   */
+  --bg2:#f7f7f8;         /* sidebar, page body  */
+  --card:#ffffff;        /* cards on pages      */
+  --ink:#0d0d0d; --ink2:#56565d; --ink3:#8e8e96;
+  --line:#e8e8eb; --line2:#d6d6dc;
+  --bub:#f3f3f5; --bub2:#e9e9ec;
+  --code-bg:#f6f6f7;
+  --accent:#2f6bff; --accent-soft:rgba(47,107,255,.12);
+  --ok:#187a48; --warn:#9a5b00; --bad:#d13438;
+  --send-bg:#0d0d0d; --send-ink:#ffffff;
+  --headbg:rgba(247,247,248,.88);
+  --shadow:0 1px 2px rgba(16,16,20,.04),0 8px 28px rgba(16,16,20,.07);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,
+    "Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,
+    "Liberation Mono",monospace;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#212121; --bg2:#171717; --card:#262628;
+  --ink:#ededed; --ink2:#b2b2b8; --ink3:#7d7d84;
+  --line:rgba(255,255,255,.11); --line2:rgba(255,255,255,.22);
+  --bub:#2f2f31; --bub2:#3a3a3d;
+  --code-bg:#1b1b1c;
+  --accent:#7aa2f7; --accent-soft:rgba(122,162,247,.16);
+  --ok:#4cc38a; --warn:#e8a33d; --bad:#ff7b72;
+  --send-bg:#ededed; --send-ink:#141414;
+  --headbg:rgba(23,23,23,.88);
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 32px rgba(0,0,0,.45);
+}
+* { box-sizing:border-box; }
+html, body { height:100%; }
+body { margin:0; background:var(--bg); color:var(--ink);
+  font:15px/1.55 var(--font); letter-spacing:-.004em;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  -webkit-text-size-adjust:100%; }
+body.page { background:var(--bg2); }
+button { font:inherit; color:inherit; }
+a { color:var(--accent); text-decoration:none; }
+::selection { background:var(--accent-soft); }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+* { scrollbar-width:thin; scrollbar-color:var(--line2) transparent; }
+*::-webkit-scrollbar { width:10px; height:10px; }
+*::-webkit-scrollbar-thumb { background:var(--line2); border-radius:99px;
+  border:3px solid transparent; background-clip:content-box; }
+*::-webkit-scrollbar-track { background:transparent; }
+code, pre { font-family:var(--mono); }
+code { font-size:.88em; background:var(--bub); padding:1.5px 6px;
+  border-radius:6px; }
+pre { background:var(--code-bg); border:1px solid var(--line);
+  border-radius:12px; padding:13px 15px; overflow-x:auto; font-size:12.8px;
+  line-height:1.65; margin:12px 0; }
+pre code { background:none; padding:0; font-size:inherit; }
+/* ---------- the mark ---------- */
+.mark { display:block; }
+.mark .mr { stroke:currentColor; }
+.mark .md { fill:var(--accent,#2f6bff); }
+/* ---------- shared bits ---------- */
+.iconbtn { width:34px; height:34px; flex:0 0 auto; border-radius:9px;
+  border:0; background:transparent; color:var(--ink3); display:grid;
+  place-items:center; cursor:pointer; }
+.iconbtn:hover { background:var(--bub); color:var(--ink); }
+.live { width:7px; height:7px; border-radius:50%; background:var(--ok);
+  display:inline-block; flex:0 0 auto; }
+.live.off { background:var(--ink3); }
+.pill { display:inline-block; padding:1px 8px; border-radius:999px;
+  font-size:11px; border:1px solid var(--line2); color:var(--ink2);
+  background:var(--bg2); white-space:nowrap; }
+.pill.pub { color:var(--ok); border-color:var(--ok); background:transparent; }
+.pill.own { color:var(--warn); border-color:var(--warn);
+  background:transparent; }
+.ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+.dim { color:var(--ink3); }
+/* ---------- document pages (developers / approve) ---------- */
+header.top { position:sticky; top:0; z-index:30; background:var(--headbg);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line); }
+.top-in { max-width:1060px; margin:0 auto; padding:9px 20px;
+  display:flex; align-items:center; gap:14px; }
+.brand { display:flex; align-items:center; gap:9px; color:var(--ink);
+  font-weight:650; font-size:15.5px; letter-spacing:-.015em; }
+.brand:hover { text-decoration:none; }
+.brand .mark { width:23px; height:23px; }
+nav.links { margin-left:auto; display:flex; gap:2px; align-items:center; }
+nav.links a, nav.links .iconbtn { font-size:13.5px; color:var(--ink2);
+  padding:7px 11px; border-radius:9px; font-weight:500; }
+nav.links a:hover { background:var(--bub); color:var(--ink); }
+nav.links a.here { color:var(--ink); font-weight:600; background:var(--bub); }
+main.page-main { max-width:1060px; margin:0 auto; padding:26px 20px 12px; }
+h1 { font-size:24px; font-weight:660; letter-spacing:-.02em; margin:2px 0 8px; }
+.tag { color:var(--ink2); font-size:14.5px; line-height:1.6; max-width:80ch;
+  margin:0 0 22px; }
+.card { background:var(--card); border:1px solid var(--line);
+  border-radius:16px; padding:20px 22px; margin-bottom:16px; }
+.k { color:var(--ink3); font-size:11.5px; text-transform:uppercase;
+  letter-spacing:.09em; margin-bottom:12px; font-weight:650; }
+.grid { display:grid; gap:12px;
+  grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); }
+.tile { background:var(--bg2); border:1px solid var(--line);
+  border-radius:12px; padding:13px 15px; }
+.tile h3 { margin:0 0 5px; font-size:14px; letter-spacing:-.01em; }
+.tile p { margin:0; color:var(--ink2); font-size:13px; line-height:1.55; }
+table { width:100%; border-collapse:collapse; font-size:13.5px; }
+th { text-align:left; color:var(--ink3); font-size:11px; font-weight:650;
+  text-transform:uppercase; letter-spacing:.07em; padding:8px 10px;
+  border-bottom:1px solid var(--line); }
+td { padding:9px 10px; vertical-align:top; }
+tbody tr + tr td { border-top:1px solid var(--line); }
+tbody tr:hover td { background:var(--bg2); }
+.m { color:var(--ink2); font-family:var(--mono); white-space:nowrap;
+  font-size:12px; }
+.p { color:var(--ink); font-family:var(--mono); font-size:12.3px;
+  word-break:break-all; }
+input, textarea, select { background:var(--card); color:var(--ink);
+  border:1px solid var(--line2); border-radius:10px; padding:10px 12px;
+  font:inherit; font-size:14px; width:100%; }
+input::placeholder, textarea::placeholder { color:var(--ink3); }
+input:focus, textarea:focus { outline:none; border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-soft); }
+label { display:block; color:var(--ink2); font-size:12.5px; font-weight:550;
+  margin:0 0 6px; }
+.field { margin-bottom:14px; }
+.btn { display:inline-flex; align-items:center; justify-content:center;
+  gap:7px; border-radius:10px; padding:9px 16px; font-size:13.5px;
+  font-weight:600; cursor:pointer; border:1px solid transparent;
+  letter-spacing:-.01em; }
+.btn:disabled { opacity:.55; cursor:progress; }
+.btn-p { background:var(--ink); color:var(--bg); }
+.btn-p:hover { opacity:.88; }
+.btn-g { background:var(--card); border-color:var(--line2); color:var(--ink); }
+.btn-g:hover { background:var(--bub); }
+.btn-d { background:none; border-color:transparent; color:var(--bad); }
+.btn-d:hover { background:rgba(209,52,56,.1); }
+.rowbtns { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.hint { color:var(--ink3); font-size:12.5px; margin-top:8px; line-height:1.5; }
+.note { border:1px solid var(--line); border-left:3px solid var(--accent);
+  background:var(--bg2); padding:11px 14px; border-radius:12px;
+  color:var(--ink2); font-size:13.5px; margin:12px 0; }
+.note.warn { border-left-color:var(--warn); }
+.note.good { border-left-color:var(--ok); }
+footer.page-foot { max-width:1060px; margin:0 auto; padding:14px 20px 30px;
+  color:var(--ink3); font-size:12.5px; border-top:1px solid var(--line); }
+/* key reveal */
+#keybox { display:none; border-color:var(--ok); }
+#keybox.on { display:block; }
+#keybox .kv { font-family:var(--mono); font-size:14px;
+  background:var(--code-bg); border:1px solid var(--line2); color:var(--ink);
+  padding:12px 14px; border-radius:10px; word-break:break-all; }
+/* ---------- the chat shell ---------- */
+body.chat { overflow:hidden; }
+.shell { display:grid; grid-template-columns:268px minmax(0,1fr);
+  height:100vh; height:100dvh; overflow:hidden; }
+body.side-off .shell { grid-template-columns:0 minmax(0,1fr); }
+body.side-off .side { border-right:0; }
+aside.side { background:var(--bg2); border-right:1px solid var(--line);
+  display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.side-top { display:flex; align-items:center; justify-content:space-between;
+  padding:14px 12px 8px; }
+.side-top .brand { padding:4px 6px; border-radius:9px; }
+.side-top .brand:hover { background:var(--bub); }
+.side-actions { display:flex; gap:2px; }
+.newchat { display:flex; align-items:center; gap:9px; width:100%;
+  padding:9px 12px; border-radius:10px; border:0; background:transparent;
+  color:var(--ink); font-size:14px; font-weight:550; cursor:pointer;
+  text-align:left; }
+.newchat:hover { background:var(--bub); }
+.newchat svg { color:var(--ink2); }
+.side-new { padding:2px 12px 8px; }
+.side-search { display:flex; align-items:center; gap:8px; margin:0 12px 6px;
+  padding:7px 11px; border-radius:10px; background:var(--card);
+  border:1px solid var(--line); color:var(--ink3); }
+.side-search input { border:0; outline:0; box-shadow:none; background:none;
+  padding:0; font-size:13.5px; }
+.side-sess { flex:1; overflow-y:auto; padding:2px 8px 8px; min-height:0; }
+.slabel { font-size:11px; font-weight:650; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--ink3); padding:10px 10px 6px; }
+.sess { display:flex; align-items:center; gap:8px; padding:8px 10px;
+  border-radius:9px; cursor:pointer; color:var(--ink2); font-size:13.5px;
+  border:1px solid transparent; }
+.sess:hover { background:var(--bub); color:var(--ink); }
+.sess.on { background:var(--bub); color:var(--ink); font-weight:550; }
+.sess .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
+.sess .x { display:none; width:24px; height:24px; border:0; background:none;
+  color:var(--ink3); border-radius:6px; cursor:pointer; place-items:center;
+  flex:0 0 auto; }
+.sess:hover .x { display:grid; }
+.sess .x:hover { color:var(--bad); background:var(--bub2); }
+.sess-hint { padding:8px 10px; color:var(--ink3); font-size:12.8px; }
+.side-foot { border-top:1px solid var(--line); padding:10px 10px 12px; }
+.side-user { display:flex; align-items:center; gap:10px; padding:6px 8px 10px;
+  min-width:0; }
+.su-av { width:30px; height:30px; flex:0 0 30px; border-radius:50%;
+  background:var(--bub); display:grid; place-items:center; color:var(--ink); }
+.su-av .mark { width:17px; height:17px; }
+.su-name { font-size:13.5px; font-weight:600; display:flex; align-items:center;
+  gap:7px; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
+.su-sub { font-size:11.5px; color:var(--ink3); margin-top:1px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.side-links { display:flex; flex-direction:column; gap:1px; }
+.side-links a, .side-links button { display:flex; align-items:center;
+  gap:10px; padding:8px 10px; border-radius:9px; border:0; background:none;
+  color:var(--ink2); font-size:13.5px; cursor:pointer; text-align:left;
+  width:100%; }
+.side-links a:hover, .side-links button:hover { background:var(--bub);
+  color:var(--ink); }
+.side-links svg { color:var(--ink3); flex:0 0 auto; }
+.side-links .tail { margin-left:auto; color:var(--ink3); }
+main.main { display:flex; flex-direction:column; min-width:0; min-height:0;
+  background:var(--bg); }
+.topbar { display:flex; align-items:center; gap:6px; padding:9px 14px;
+  flex:0 0 auto; position:relative; }
+.top-links { margin-left:auto; display:flex; align-items:center; gap:2px; }
+.top-links a { font-size:13px; color:var(--ink2); padding:7px 11px;
+  border-radius:8px; font-weight:500; }
+.top-links a:hover { color:var(--ink); background:var(--bub); }
+.top-links a.here { color:var(--ink); font-weight:600; }
+.chat-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden;
+  scroll-behavior:smooth; }
+.chat-body { display:flex; flex-direction:column; min-height:100%; }
+/* empty state */
+.hero { flex:1; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; text-align:center; padding:24px 20px 44px; }
+.hero .mark { width:46px; height:46px; color:var(--ink); margin-bottom:14px; }
+.hero h1 { font-size:27px; font-weight:640; letter-spacing:-.022em; margin:0;
+  line-height:1.25; }
+.hero .sub { color:var(--ink3); font-size:14px; margin:8px 0 0; max-width:52ch;
+  line-height:1.55; }
+.hero.hide { display:none; }
+.chips { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;
+  width:100%; max-width:560px; margin-top:22px; }
+.chip { display:flex; align-items:center; gap:11px; text-align:left;
+  padding:11px 13px; border:1px solid var(--line); border-radius:14px;
+  background:var(--card); cursor:pointer; transition:border-color .12s,
+  box-shadow .12s; }
+.chip:hover { border-color:var(--line2); box-shadow:0 2px 10px
+  rgba(16,16,20,.06); }
+.chip .ci { width:32px; height:32px; flex:0 0 32px; border-radius:10px;
+  background:var(--bub); color:var(--ink2); display:grid; place-items:center; }
+.chip b { display:block; font-size:13.3px; font-weight:600; color:var(--ink);
+  letter-spacing:-.01em; }
+.chip span.d { display:block; font-size:11.8px; color:var(--ink3);
+  margin-top:1px; }
+/* thread */
+.thread { width:100%; max-width:780px; margin:0 auto; padding:14px 20px 8px; }
+.msg { display:flex; gap:12px; padding:9px 0; align-items:flex-start; }
+.msg .av { width:30px; height:30px; flex:0 0 30px; border-radius:50%;
+  background:var(--bub); display:grid; place-items:center; color:var(--ink);
+  margin-top:1px; }
+.msg .av .mark { width:17px; height:17px; }
+.msg .flow { min-width:0; flex:1; }
+.msg.me { justify-content:flex-end; }
+.msg.me .flow { display:flex; justify-content:flex-end; }
+.bub-u { display:block; background:var(--bub); border-radius:20px;
+  padding:10px 16px; font-size:14.8px; line-height:1.55;
+  word-break:break-word; max-width:min(78%,640px); }
+.bub-a { font-size:15.2px; line-height:1.66; letter-spacing:-.008em;
+  max-width:720px; word-break:break-word; }
+.bub-a p { margin:0 0 10px; } .bub-a p:last-child { margin:0; }
+.bub-a ul, .bub-a ol { margin:8px 0 10px; padding-left:22px; }
+.bub-a li { margin:3px 0; }
+.bub-a h3, .bub-a h4, .bub-a h5, .bub-a h6 { margin:14px 0 6px;
+  font-size:15.5px; letter-spacing:-.01em; }
+.bub-a code { background:var(--bub); }
+.bub-a pre { margin:10px 0; }
+.bub-a a { text-decoration:underline; text-underline-offset:2px; }
+.bub-a img.inl { max-width:100%; max-height:420px; border-radius:12px;
+  border:1px solid var(--line); margin:8px 0; display:block; }
+.acts { display:flex; gap:2px; margin-top:4px; opacity:0;
+  transition:opacity .15s; }
+.msg:hover .acts { opacity:1; }
+@media (hover:none) { .acts { opacity:.65; } }
+.actb { width:28px; height:28px; border-radius:7px; border:0; background:none;
+  color:var(--ink3); display:grid; place-items:center; cursor:pointer; }
+.actb:hover { background:var(--bub); color:var(--ink); }
+.att { margin-top:10px; display:flex; flex-direction:column; gap:8px;
+  max-width:480px; }
+.att img { max-width:100%; max-height:420px; border-radius:12px;
+  border:1px solid var(--line); display:block; }
+.att audio { width:100%; max-width:420px; }
+.filedl { display:inline-flex; align-items:center; gap:9px; padding:9px 13px;
+  border:1px solid var(--line); border-radius:12px; background:var(--card);
+  color:var(--ink); font-size:13.5px; max-width:100%; }
+.filedl:hover { background:var(--bub); }
+.filedl .fn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* typing */
+.typing { display:none; }
+.typing.on { display:flex; }
+.tdots { display:flex; gap:5px; padding:13px 15px; background:var(--bub);
+  border-radius:18px; width:fit-content; }
+.tdots span { width:7px; height:7px; border-radius:50%; background:var(--ink3);
+  animation:bob 1.2s infinite ease-in-out; }
+.tdots span:nth-child(2) { animation-delay:.15s; }
+.tdots span:nth-child(3) { animation-delay:.3s; }
+@keyframes bob { 0%,60%,100% { transform:translateY(0); opacity:.5; }
+  30% { transform:translateY(-4px); opacity:1; } }
+.cursor { display:inline-block; width:7px; height:15px; background:var(--ink);
+  opacity:.65; animation:blink 1s steps(2) infinite; vertical-align:-2px;
+  border-radius:2px; margin-left:2px; }
+@keyframes blink { 50% { opacity:0; } }
+/* composer dock */
+.dock { flex:0 0 auto; padding:4px 16px 8px; background:var(--bg); }
+.dock-in { max-width:780px; margin:0 auto; }
+.composer { display:flex; align-items:flex-end; gap:6px;
+  background:var(--card); border:1px solid var(--line2); border-radius:26px;
+  padding:8px; box-shadow:var(--shadow); transition:box-shadow .15s; }
+.composer:focus-within { box-shadow:var(--shadow),0 0 0 3px
+  var(--accent-soft); }
+.composer textarea { flex:1; min-width:0; border:0; outline:0; resize:none;
+  background:none; font:inherit; font-size:15px; line-height:1.5;
+  max-height:200px; padding:9px 6px 9px 9px; min-height:24px; }
+.composer textarea::placeholder { color:var(--ink3); }
+.sbtn { width:36px; height:36px; flex:0 0 36px; border-radius:50%;
+  display:grid; place-items:center; border:1px solid var(--line);
+  background:none; color:var(--ink2); cursor:pointer; }
+.sbtn:hover { background:var(--bub); color:var(--ink); }
+.sbtn.rec { background:var(--bad); border-color:var(--bad); color:#fff;
+  animation:pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity:.55; } }
+.send { border:0; background:var(--send-bg); color:var(--send-ink);
+  cursor:pointer; transition:transform .06s; }
+.send:hover { background:var(--send-bg); opacity:.88; }
+.send:active { transform:scale(.93); }
+.send:disabled { background:var(--bub); color:var(--ink3); cursor:default;
+  opacity:1; }
+.fine { text-align:center; color:var(--ink3); font-size:12px; padding:9px 0 2px;
+  letter-spacing:0; }
+/* scrim (mobile drawer) */
+#scrim { display:none; position:fixed; inset:0; background:rgba(0,0,0,.42);
+  z-index:40; }
+#scrim.on { display:block; }
+/* ---------- dashboard (telemetry) ---------- */
+.dstat { display:flex; align-items:center; gap:8px; font-size:13px;
+  color:var(--ink2); margin-left:6px; }
+.statrow { display:grid; gap:12px; margin-bottom:16px;
+  grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
+.big { font-size:21px; font-weight:650; letter-spacing:-.02em;
+  margin-top:2px; }
+.dtopics { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+.tchip { background:var(--bg2); color:var(--ink2); border:1px solid var(--line);
+  border-radius:999px; padding:5px 12px; font-size:12.5px; cursor:pointer; }
+.tchip:hover { border-color:var(--line2); color:var(--ink); }
+.tchip.on { background:var(--accent-soft); border-color:var(--accent);
+  color:var(--accent); font-weight:600; }
+.dfeed { background:var(--code-bg); border:1px solid var(--line);
+  border-radius:12px; padding:10px 13px; height:56vh; min-height:300px;
+  overflow-y:auto; font:12.3px/1.7 var(--mono); }
+.row { display:flex; gap:10px; padding:3px 0; border-bottom:1px solid
+  var(--line); word-break:break-all; }
+.seq { color:var(--ink3); flex:0 0 auto; }
+.tp { color:var(--accent); font-weight:600; flex:0 0 auto; }
+.row code { background:none; padding:0; color:var(--ink2); }
+/* ---------- token gate / locked ---------- */
+.gate-wrap { min-height:100vh; min-height:100dvh; display:grid;
+  place-items:center; padding:24px; background:var(--bg2); }
+.gate-card { background:var(--card); border:1px solid var(--line);
+  border-radius:18px; padding:28px 28px 24px; max-width:400px; width:100%;
+  box-shadow:var(--shadow); }
+.gate-card .mark { width:34px; height:34px; margin-bottom:14px; }
+.gate-card h1 { font-size:19px; margin:0 0 8px; letter-spacing:-.015em; }
+.gate-card p { color:var(--ink2); font-size:13.5px; margin:0 0 16px;
+  line-height:1.55; }
+.gate-card form input { margin-bottom:12px; }
+.gate-back { margin-top:16px; }
+.gate-back a { font-size:13px; color:var(--ink2); }
+.gate-back a:hover { color:var(--ink); }
+/* ---------- mobile ---------- */
+@media (max-width: 860px) {
+  .shell { grid-template-columns:1fr; }
+  body.side-off .shell { grid-template-columns:1fr; }
+  aside.side { position:fixed; top:0; left:0; bottom:0; width:min(320px,86vw);
+    z-index:50; transform:translateX(-103%); transition:transform .2s ease;
+    box-shadow:none; }
+  aside.side.open { transform:none; box-shadow:var(--shadow); }
+  body.side-off .side { border-right:1px solid var(--line); }
+  .top-links { display:none; position:absolute; top:52px; right:10px;
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:6px; flex-direction:column; align-items:stretch;
+    box-shadow:var(--shadow); margin:0; z-index:60; }
+  .top-links.open { display:flex; }
+  nav.links { display:none; position:fixed; top:52px; right:10px;
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:6px; flex-direction:column; align-items:stretch;
+    box-shadow:var(--shadow); margin:0; z-index:60; }
+  nav.links.open { display:flex; }
+  main.page-main { padding:18px 14px 8px; }
+  .thread { padding:10px 14px 6px; }
+  .bub-u { max-width:88%; }
+  .dock { padding:4px 10px 6px; }
+  .hero h1 { font-size:23px; }
+  .chips { grid-template-columns:1fr; max-width:440px; }
+  h1 { font-size:21px; }
+  .card { padding:16px; }
+  header.top .iconbtn.menu { display:grid; }
+}
+@media (min-width: 861px) {
+  header.top .iconbtn.menu { display:none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cursor, .tdots span, .sbtn.rec { animation:none; }
+  .chat-scroll { scroll-behavior:auto; }
+  aside.side { transition:none; }
+}
 """
 
 
-def _head(agent_name: str, title: str, here: str = "",
+#: Tiny boot script, inlined in <head> before first paint so the theme never
+#: flashes: stored choice wins, otherwise follow the OS.
+THEME_BOOT = """(function(){
+try{
+  var t=null;
+  try{t=localStorage.getItem("realai.theme");}catch(e){}
+  if(t!=="dark"&&t!=="light"){
+    t=(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)")
+      .matches)?"dark":"light";
+  }
+  document.documentElement.setAttribute("data-theme",t);
+}catch(e){document.documentElement.setAttribute("data-theme","light");}
+})();"""
+
+
+# ------------------------------------------------------------- page scaffolds
+
+def _head(name: str, title: str, here: str = "",
           description: str = "") -> str:
-    """Shared ``<head>`` + branded header. ``here`` marks the active link."""
+    """Shared ``<head>`` + sticky header for the document pages
+    (``/developers``, ``/approve``). ``here`` marks the active link."""
     def link(href: str, label: str, key: str) -> str:
         cls = ' class="here"' if key == here else ""
         return f'<a href="{href}"{cls}>{esc(label)}</a>'
@@ -453,79 +771,238 @@ def _head(agent_name: str, title: str, here: str = "",
     meta = (f'<meta name="description" content="{esc(description)}">'
             if description else "")
     return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="en" data-theme="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)}</title>
 {meta}
 <link rel="icon" type="image/svg+xml" href="/logo.svg">
 <link rel="alternate icon" href="/favicon.ico">
-<meta name="theme-color" content="#0b0e14">
-<meta name="color-scheme" content="dark">
-<style>{_CSS}</style></head><body>
-<header class="top"><div class="topin">
- <a class="brand" href="/" aria-label="{esc(agent_name)} home">
-   {_logo_mark(agent_name)}<span>{esc(agent_name)}<span class="dot">.</span></span>
+<meta name="theme-color" content="#ffffff">
+<script>{THEME_BOOT}</script>
+<style>{_CSS}</style></head><body class="page">
+<header class="top"><div class="top-in">
+ <a class="brand" href="/" aria-label="{esc(name)} home">
+   {_logo_mark(name)}<span>{esc(name)}</span>
  </a>
- <button class="burger" id="burger" aria-label="menu"
-   aria-expanded="false">☰</button>
+ <button class="iconbtn menu" id="burger" aria-label="menu"
+   aria-expanded="false">{IC_BURGER}</button>
  <nav class="links" id="links">
    {link("/", "Chat", "chat")}
    {link("/developers", "Developers", "developers")}
-   {link("/dashboard", "Live telemetry", "dashboard")}
+   {link("/dashboard", "Telemetry", "dashboard")}
    {link("/approve", "Approvals", "approve")}
-   {link("/api.json", "API index", "api")}
+   {link("/api.json", "API", "api")}
+   <button class="iconbtn" data-themebtn type="button"
+     title="toggle theme">{IC_MOON}</button>
  </nav>
 </div></header>"""
 
 
-_FOOTER = Template("""
-<footer>$agent · owner $owner · mood $mood · $grand events counted ·
- pure Python stdlib · no external AI, no external keys · MIT</footer>
-</main>""")
+def _chat_head(name: str, title: str, description: str) -> str:
+    """Head + shell start for the chat app (the sidebar lives in the shell,
+    not in a site header — the way the real apps do it)."""
+    return f"""<!doctype html>
+<html lang="en" data-theme="light"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{esc(title)}</title>
+<meta name="description" content="{esc(description)}">
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="alternate icon" href="/favicon.ico">
+<meta name="theme-color" content="#ffffff">
+<script>{THEME_BOOT}</script>
+<style>{_CSS}</style></head><body class="chat">
+<div class="shell" id="shell">
+<aside class="side" id="sidebar">
+ <div class="side-top">
+  <a class="brand" href="/" aria-label="{esc(name)} home">
+    {_logo_mark(name)}<span>{esc(name)}</span>
+  </a>
+  <div class="side-actions">
+   <button class="iconbtn" data-themebtn type="button"
+     title="toggle theme">{IC_MOON}</button>
+   <button class="iconbtn" id="sidetoggle" type="button"
+     title="hide sidebar">{IC_CHEV_L}</button>
+  </div>
+ </div>
+ <div class="side-new">
+  <button class="newchat" id="newchat" type="button">{IC_PLUS}New chat</button>
+ </div>
+ <div class="side-search">{IC_SEARCH}<input id="sessfilter" type="text"
+   placeholder="Search chats" autocomplete="off"
+   aria-label="search chats"></div>
+ <div class="side-sess" id="sessions"></div>
+ <div class="side-foot">
+  <div class="side-user">
+   <span class="su-av">{MARK_DECORATIVE}</span>
+   <span style="min-width:0">
+    <span class="su-name">{esc(name)}
+     <span class="live off" id="livedot"></span></span>
+    <span class="su-sub" id="agentstatus">checking…</span>
+   </span>
+  </div>
+  <nav class="side-links">
+   <a href="/developers">{IC_CODE}Developers</a>
+   <a href="/dashboard">{IC_PULSE}Live telemetry</a>
+   <a href="/approve">{IC_USER}Approvals</a>
+   <a href="/api.json">{IC_API}API index</a>
+  </nav>
+ </div>
+</aside>
+<main class="main">
+ <header class="topbar">
+  <button class="iconbtn" id="burger" type="button" aria-label="menu"
+    aria-expanded="false">{IC_BURGER}</button>
+  <nav class="top-links" id="links">
+   <a href="/" class="here">Chat</a>
+   <a href="/developers">Developers</a>
+   <a href="/dashboard">Telemetry</a>
+   <a href="/approve">Approvals</a>
+   <a href="/api.json">API</a>
+  </nav>
+ </header>
+ <div class="chat-scroll" id="scroller">
+  <div class="chat-body">"""
 
-#: Small shared script: menu toggle + a copy-to-clipboard helper.
-_NAV_JS = """
+
+_FOOTER = Template("""
+<footer class="page-foot">$agent · owner $owner · mood $mood ·
+$grand events counted · pure Python stdlib · no external AI, no external
+keys · MIT</footer>
+""")
+
+#: Shared chrome script: theme boot/toggle, burger (drawer on mobile,
+#: sidebar collapse on desktop), scrim, copy-to-clipboard. Plain string —
+#: the icons are spliced in with ``@@...@@`` so no f-string braces.
+_CHROME_JS = """
 <script>
 (function(){
-  var burger = document.getElementById("burger");
-  var links = document.getElementById("links");
-  var side = document.getElementById("sidebar");
-  function closeAll(){
-    if (links) links.classList.remove("open");
-    if (side) side.classList.remove("open");
-    if (burger) burger.setAttribute("aria-expanded", "false");
+  var root=document.documentElement;
+  var meta=document.querySelector('meta[name="theme-color"]');
+  var cur=root.getAttribute("data-theme")||"light";
+  var ICON_SUN="@@SUN@@", ICON_MOON="@@MOON@@", ICON_CHECK="@@CHECK@@";
+  function paint(){
+    if(meta) meta.setAttribute("content",cur==="dark"?"#171717":"#ffffff");
   }
-  if (burger) burger.addEventListener("click", function(){
-    var open = (links && links.classList.contains("open")) ||
-               (side && side.classList.contains("open"));
-    closeAll();
-    if (!open) {
-      if (side) { side.classList.add("open"); }
-      else if (links) { links.classList.add("open"); }
-      burger.setAttribute("aria-expanded", "true");
+  function syncIcons(){
+    var btns=document.querySelectorAll("[data-themebtn]");
+    Array.prototype.forEach.call(btns,function(b){
+      b.innerHTML=cur==="dark"?ICON_SUN:ICON_MOON;
+      b.title=cur==="dark"?"switch to light theme":"switch to dark theme";
+    });
+  }
+  window.realaiTheme={
+    get:function(){return cur;},
+    set:function(t){
+      cur=(t==="dark")?"dark":"light";
+      root.setAttribute("data-theme",cur);
+      try{localStorage.setItem("realai.theme",cur);}catch(e){}
+      paint();syncIcons();
+    }
+  };
+  document.addEventListener("click",function(e){
+    var t=e.target;
+    var b=t&&t.closest?t.closest("[data-themebtn]"):null;
+    if(b) window.realaiTheme.set(cur==="dark"?"light":"dark");
+    var s=t&&t.closest?t.closest("#scrim"):null;
+    if(s) closeAll();
+  });
+  paint();syncIcons();
+  /* ---- chrome: burger / drawer / sidebar collapse ---- */
+  var burger=document.getElementById("burger");
+  var links=document.getElementById("links");
+  var side=document.getElementById("sidebar");
+  var scrim=document.getElementById("scrim");
+  function isMobile(){
+    return window.matchMedia("(max-width:860px)").matches;
+  }
+  function closeAll(){
+    if(links) links.classList.remove("open");
+    if(side) side.classList.remove("open");
+    if(scrim) scrim.classList.remove("on");
+    if(burger) burger.setAttribute("aria-expanded","false");
+  }
+  if(burger) burger.addEventListener("click",function(){
+    if(isMobile()){
+      var anyOpen=(links&&links.classList.contains("open"))||
+                  (side&&side.classList.contains("open"));
+      closeAll();
+      if(!anyOpen){
+        if(side){
+          side.classList.add("open");
+          if(scrim) scrim.classList.add("on");
+        } else if(links){
+          links.classList.add("open");
+        }
+        burger.setAttribute("aria-expanded","true");
+      }
+      return;
+    }
+    if(side){
+      var off=document.body.classList.toggle("side-off");
+      try{localStorage.setItem("realai.side",off?"off":"on");}catch(e){}
+      burger.setAttribute("aria-expanded",off?"false":"true");
+    } else if(links){
+      links.classList.toggle("open");
     }
   });
-  document.addEventListener("keydown", function(e){
-    if (e.key === "Escape") closeAll();
+  var st=document.getElementById("sidetoggle");
+  if(st) st.addEventListener("click",function(){
+    document.body.classList.add("side-off");
+    try{localStorage.setItem("realai.side","off");}catch(e){}
   });
-  window.realaiCopy = function(text, btn){
+  document.addEventListener("keydown",function(e){
+    if(e.key==="Escape") closeAll();
+  });
+  window.addEventListener("resize",function(){
+    if(!isMobile()&&side) side.classList.remove("open");
+    if(!isMobile()&&scrim) scrim.classList.remove("on");
+  });
+  /* restore desktop sidebar preference (no flash: it is a layout choice) */
+  try{
+    if(!isMobile()&&side&&localStorage.getItem("realai.side")==="off"){
+      document.body.classList.add("side-off");
+    }
+  }catch(e){}
+  /* ---- copy helper (works for text and icon buttons) ---- */
+  window.realaiCopy=function(text,btn){
     function done(){
-      if (!btn) return;
-      var old = btn.textContent;
-      btn.textContent = "copied";
-      setTimeout(function(){ btn.textContent = old; }, 1200);
+      if(!btn||btn.dataset.copied==="1") return;
+      btn.dataset.copied="1";
+      var orig=btn.innerHTML;
+      if(btn.classList.contains("actb")||btn.classList.contains("iconbtn")){
+        btn.innerHTML=ICON_CHECK;
+        btn.style.color="var(--ok)";
+      }else{
+        btn.innerHTML="copied";
+      }
+      setTimeout(function(){
+        btn.innerHTML=orig;
+        btn.style.color="";
+        delete btn.dataset.copied;
+      },1300);
     }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, done);
-    } else {
-      var ta = document.createElement("textarea");
-      ta.value = text; document.body.appendChild(ta); ta.select();
-      try { document.execCommand("copy"); } catch (e) {}
-      document.body.removeChild(ta); done();
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done,done);
+    }else{
+      var ta=document.createElement("textarea");
+      ta.value=text;document.body.appendChild(ta);ta.select();
+      try{document.execCommand("copy");}catch(e){}
+      document.body.removeChild(ta);done();
     }
   };
 })();
 </script>"""
+
+
+def _js_str(s: str) -> str:
+    """Make a string safe inside a JS double-quoted literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _chrome_js() -> str:
+    return (_CHROME_JS.replace("@@SUN@@", _js_str(IC_SUN))
+                     .replace("@@MOON@@", _js_str(IC_MOON))
+                     .replace("@@CHECK@@", _js_str(IC_CHECK)))
 
 
 def _footer(agent: Any) -> str:
@@ -538,61 +1015,92 @@ def _footer(agent: Any) -> str:
 
 # --------------------------------------------------------------- the chat app
 
-_CHAT_BODY = Template("""
-<main>
-<div class="chatwrap">
- <aside class="side" id="sidebar">
-  <div class="k">conversations</div>
-  <button class="act" id="newchat" style="width:100%">+ New chat</button>
-  <div id="sessions"></div>
-  <div class="hint">Sessions live in this browser <b>and</b> in the agent's own
-   database, so $agent keeps the last few turns of each one in context.
-   Nothing is sent anywhere else — talk to it as much as you like.</div>
- </aside>
- <section class="chat">
-  <div id="log"></div>
-  <div id="typing"><span class="d"></span><span class="d"></span>
-   <span class="d"></span><span id="typingwho">$agent is typing…</span></div>
-  <form class="composer" id="composer">
-   <textarea id="input" rows="1" autocomplete="off"
-     placeholder="talk to it — no key needed · Enter sends, Shift+Enter newline"
-     aria-label="message to $agent"></textarea>
-   <button class="act ghost" id="mic" type="button" title="speak"
-     style="display:none" aria-label="record a voice message">🎤</button>
-   <button class="act" id="send" type="submit">Send</button>
-  </form>
- </section>
-</div>
-<div class="card" style="margin-top:16px">
- <div class="k">what this is</div>
- <div class="grid">
-  <div class="tile"><h3 class="ok">A real AI, built from scratch</h3>
-   <p>$tagline It has drives, a mood, goals, memory and its own thinking
-    loop — and you can read every line of it.</p></div>
-  <div class="tile"><h3 class="ok">Honest about its limits</h3>
-   <p>No internet, no external model, no live data feed. Ask it for something
-    it does not have and it says so plainly, then tells you what it can do
-    instead.</p></div>
-  <div class="tile"><h3 class="warn">The API belongs to the owner</h3>
-   <p>This demo chat is keyless and rate-limited per visitor (about
-    $rate/min). Programmatic access needs a key only the owner can issue —
-    see <a href="/developers">the developer portal</a>.</p></div>
+#: ``string.Template``: only ``$agent`` and ``$tagline`` are substituted.
+#: Icons and the mark are spliced into the template string at import time.
+_CHAT_BODY = Template((
+"""
+<div class="hero" id="hero">
+ <svg viewBox="0 0 64 64" class="mark" width="46" height="46"
+   aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+  <path class="mr" d="M50.91 25.47A20 20 0 1 1 31.65 12" fill="none"
+   stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+  <circle class="md" cx="43.47" cy="15.62" r="5"/></svg>
+ <h1>What can I help with?</h1>
+ <p class="sub">$tagline</p>
+ <div class="chips">
+  <button type="button" class="chip" data-msg="what can you do?">
+   <span class="ci">__IC_BUBBLE__</span>
+   <span class="ct"><b>What can you do?</b><span class="d">the honest version</span></span>
+  </button>
+  <button type="button" class="chip" data-msg="status">
+   <span class="ci">__IC_PULSE__</span>
+   <span class="ct"><b>Show your status</b><span class="d">mood, drives, goals, memory</span></span>
+  </button>
+  <button type="button" class="chip" data-msg="draw me a lighthouse at dawn">
+   <span class="ci">__IC_IMG__</span>
+   <span class="ct"><b>Draw me a lighthouse at dawn</b><span class="d">I'll generate the image</span></span>
+  </button>
+  <button type="button" class="chip" data-msg="make a presentation about the history of AI">
+   <span class="ci">__IC_SLIDES__</span>
+   <span class="ct"><b>Make a presentation</b><span class="d">a real .pptx, with cover slides</span></span>
+  </button>
  </div>
-</div>""")
+</div>
+<div class="thread" id="log"></div>
+<div class="msg typing" id="typing">
+ <div class="av">__MARK__</div>
+ <div class="flow"><div class="tdots"><span></span><span></span>
+  <span></span></div></div>
+</div>
+</div>
+</div>
+<div class="dock"><div class="dock-in">
+<form class="composer" id="composer">
+ <button type="button" class="sbtn" id="mic" style="display:none"
+   title="speak — I'll transcribe it" aria-label="record a voice
+ message">__IC_MIC__</button>
+ <textarea id="input" rows="1" autocomplete="off"
+   placeholder="talk to it — no key needed · Enter sends, Shift+Enter for a
+ new line" aria-label="message to $agent"></textarea>
+ <button type="submit" class="sbtn send" id="send" title="send"
+   aria-label="send">__IC_SEND__</button>
+</form>
+<div class="fine">No key, no signup · every request is counted · $agent can
+ make mistakes — check important answers</div>
+</div></div>
+</main>
+<div id="scrim"></div>
+</div>
+"""
+              .replace("__MARK__", MARK_DECORATIVE)
+              .replace("__IC_BUBBLE__", IC_BUBBLE)
+              .replace("__IC_PULSE__", IC_PULSE)
+              .replace("__IC_IMG__", IC_IMG)
+              .replace("__IC_SLIDES__", IC_SLIDES)
+              .replace("__IC_MIC__", IC_MIC)
+              .replace("__IC_SEND__", IC_SEND)))
+
 
 #: Plain (non-Template) so JS regexes and ``$1`` replacements stay literal.
-#: ``@@AGENT@@`` is substituted by :func:`chat_page`.
+#: ``@@AGENT@@`` / ``@@MARK@@`` / ``@@COPY@@`` / ``@@SPEAK@@`` / ``@@DL@@``
+#: are substituted by :func:`chat_page`.
 _CHAT_JS = """
 <script>
 var AGENT = "@@AGENT@@";
+var MARK = "@@MARK@@";
 var STORE = "realai.sessions.v1";
 var log = document.getElementById("log");
+var hero = document.getElementById("hero");
 var input = document.getElementById("input");
 var send = document.getElementById("send");
 var typing = document.getElementById("typing");
 var sessionsBox = document.getElementById("sessions");
 var sidebar = document.getElementById("sidebar");
+var scrim = document.getElementById("scrim");
+var filterInput = document.getElementById("sessfilter");
 var current = null;
+var isBusy = false;
+var CAPS = { talk:false, images:false, listen:false, speak:false };
 
 function esc(s){
   return String(s).replace(/[&<>"']/g, function(ch){
@@ -687,17 +1195,26 @@ function upsert(s){
   list.sort(function(a, b){ return b.ts - a.ts; });
   save(list);
 }
+function refreshHero(){
+  var has = current && current.messages && current.messages.length > 0;
+  hero.style.display = has ? "none" : "";
+}
 /* --- rendering --- */
-function attach(body, atts){
+function attach(where, atts){
   if (!atts || !atts.length) return;
+  var box = where.querySelector(".att");
+  if (!box){
+    box = document.createElement("div");
+    box.className = "att";
+    where.appendChild(box);
+  }
   atts.forEach(function(a){
     if (!a || !a.url || !/^\\/media\\//.test(a.url)) return;
-    var box = document.createElement("div");
-    box.className = "att";
     if (a.kind === "image"){
       var img = document.createElement("img");
       img.src = a.url; img.alt = "generated image"; img.loading = "lazy";
-      var lnk = document.createElement("a"); lnk.href = a.url; lnk.target = "_blank";
+      var lnk = document.createElement("a"); lnk.href = a.url;
+      lnk.target = "_blank";
       lnk.appendChild(img); box.appendChild(lnk);
     } else if (a.kind === "audio"){
       var au = document.createElement("audio");
@@ -705,56 +1222,76 @@ function attach(body, atts){
       box.appendChild(au);
     } else {
       var dl = document.createElement("a");
-      dl.href = a.url; dl.className = "act"; dl.download = a.name || "";
-      dl.textContent = "⬇ download " + (a.name || "file");
+      dl.href = a.url; dl.className = "filedl";
+      dl.setAttribute("download", a.name || "");
+      dl.innerHTML = "@@DL@@" + '<span class="fn">'
+        + esc(a.name || "download") + "</span>";
       box.appendChild(dl);
     }
-    body.appendChild(box);
   });
 }
-function speakBtn(body, text){
-  if (!CAPS.speak) return;
+function copyBtn(target, text){
   var b = document.createElement("button");
-  b.type = "button"; b.className = "tts"; b.title = "read aloud";
-  b.textContent = "🔊";
+  b.type = "button"; b.className = "actb"; b.title = "copy";
+  b.innerHTML = "@@COPY@@";
+  b.onclick = function(){ window.realaiCopy(text, b); };
+  return b;
+}
+function speakBtn(target, text){
+  var b = document.createElement("button");
+  b.type = "button"; b.className = "actb"; b.title = "read aloud";
+  b.innerHTML = "@@SPEAK@@";
   b.onclick = function(){
-    b.disabled = true; b.textContent = "…";
+    b.disabled = true; b.style.opacity = ".5";
     fetch("/public/speak", { method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: text }) })
     .then(function(r){ return r.json(); })
     .then(function(j){
-      b.textContent = "🔊"; b.disabled = false;
-      if (j.url) attach(body, [{ kind: "audio", url: j.url, autoplay: true }]);
-    }).catch(function(){ b.textContent = "🔊"; b.disabled = false; });
+      b.disabled = false; b.style.opacity = "";
+      if (j.url) attach(target, [{ kind: "audio", url: j.url,
+                                   autoplay: true }]);
+    }).catch(function(){ b.disabled = false; b.style.opacity = ""; });
   };
-  body.appendChild(b);
+  return b;
 }
 function bubble(role, text, animate, atts){
-  var wrap = document.createElement("div");
-  wrap.className = "msg " + (role === "user" ? "me" : "ai");
+  if (role === "user"){
+    var wrap = document.createElement("div");
+    wrap.className = "msg me";
+    var flow = document.createElement("div");
+    flow.className = "flow";
+    var bub = document.createElement("div");
+    bub.className = "bub-u";
+    bub.innerHTML = md(text);
+    flow.appendChild(bub); wrap.appendChild(flow);
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+    return bub;
+  }
+  var w = document.createElement("div");
+  w.className = "msg ai";
   var av = document.createElement("div");
-  av.className = "av";
-  av.textContent = role === "user" ? "you" : AGENT.slice(0, 1);
-  var bub = document.createElement("div");
-  bub.className = "bub";
-  var who = document.createElement("div");
-  who.className = "who";
-  who.textContent = role === "user" ? "you" : AGENT;
-  var body = document.createElement("div");
-  body.className = "body";
-  bub.appendChild(who); bub.appendChild(body);
-  wrap.appendChild(av); wrap.appendChild(bub);
-  log.appendChild(wrap);
+  av.className = "av"; av.innerHTML = MARK;
+  var f = document.createElement("div");
+  f.className = "flow";
+  var b = document.createElement("div");
+  b.className = "bub-a";
+  var acts = document.createElement("div");
+  acts.className = "acts";
+  acts.appendChild(copyBtn(f, text));
+  f.appendChild(b); f.appendChild(acts);
+  w.appendChild(av); w.appendChild(f);
+  log.appendChild(w);
   function after(){
-    attach(body, atts);
-    if (role !== "user") speakBtn(body, text);
+    attach(f, atts);
+    if (CAPS.speak) acts.appendChild(speakBtn(f, text));
     log.scrollTop = log.scrollHeight;
   }
-  if (role === "user" || !animate){ body.innerHTML = md(text); after(); }
-  else reveal(body, text, after);
+  if (!animate){ b.innerHTML = md(text); after(); }
+  else reveal(b, text, after);
   log.scrollTop = log.scrollHeight;
-  return body;
+  return b;
 }
 /* streaming reveal: words land progressively, click to skip */
 function reveal(el, text, onDone){
@@ -773,7 +1310,7 @@ function reveal(el, text, onDone){
     if (done) return;
     i = Math.min(parts.length, i + Math.max(2, Math.round(parts.length / 90)));
     el.innerHTML = md(parts.slice(0, i).join("")) + '<span class="cursor">'
-      + '&nbsp;</span>';
+      + "&nbsp;</span>";
     log.scrollTop = log.scrollHeight;
     if (i >= parts.length){ finish(); return; }
     timer = setTimeout(step, 18);
@@ -781,24 +1318,27 @@ function reveal(el, text, onDone){
 }
 function renderSessions(){
   var list = load();
+  var q = (filterInput.value || "").trim().toLowerCase();
+  var shown = 0;
   sessionsBox.innerHTML = "";
-  if (!list.length){
-    var empty = document.createElement("div");
-    empty.className = "hint";
-    empty.textContent = "no conversations yet";
-    sessionsBox.appendChild(empty);
-    return;
-  }
+  var label = document.createElement("div");
+  label.className = "slabel";
+  label.textContent = "Chats";
+  sessionsBox.appendChild(label);
   list.forEach(function(s){
+    var t = title(s);
+    if (q && t.toLowerCase().indexOf(q) === -1) return;
+    shown++;
     var row = document.createElement("div");
     row.className = "sess" + (current && current.id === s.id ? " on" : "");
-    var t = document.createElement("div");
-    t.className = "t";
-    t.textContent = title(s);
-    t.title = ((s.messages || []).length) + " messages";
+    var el = document.createElement("div");
+    el.className = "t";
+    el.textContent = t;
+    el.title = ((s.messages || []).length) + " messages";
     var x = document.createElement("button");
     x.className = "x";
-    x.textContent = "\\u00d7";
+    x.type = "button";
+    x.innerHTML = "\\u00d7";
     x.setAttribute("aria-label", "delete conversation");
     x.addEventListener("click", function(ev){
       ev.stopPropagation();
@@ -806,52 +1346,65 @@ function renderSessions(){
       if (current && current.id === s.id){ current = null; newChat(); }
       else renderSessions();
     });
-    row.appendChild(t); row.appendChild(x);
+    row.appendChild(el); row.appendChild(x);
     row.addEventListener("click", function(){ openSession(s.id); });
     sessionsBox.appendChild(row);
   });
+  if (!shown){
+    var e = document.createElement("div");
+    e.className = "sess-hint";
+    e.textContent = q ? "no chats match \\u201C" + q + "\\u201D"
+                      : "no conversations yet";
+    sessionsBox.appendChild(e);
+  }
 }
 function paint(s){
-  /* attachments are re-rendered from the saved message (see bubble) */
   log.innerHTML = "";
-  (s.messages || []).forEach(function(m){ bubble(m.role, m.text, false, m.atts); });
-  if (!(s.messages || []).length) greet();
-}
-function greet(){
-  bubble("ai", "Hi — I'm " + AGENT + ", a self-contained AI with my own mind, "
-    + "memory and goals. Ask me `status`, tell me something to keep with "
-    + "`remember that ...`, or ask me for something I cannot do and I will "
-    + "answer honestly.", false);
+  (s.messages || []).forEach(function(m){
+    bubble(m.role, m.text, false, m.atts);
+  });
+  refreshHero();
+  log.scrollTop = log.scrollHeight;
 }
 function newChat(){
   current = { id: "local-" + Date.now().toString(36) + "-"
     + Math.random().toString(36).slice(2, 8),
     session_id: null, ts: Date.now(), messages: [] };
-  upsert(current); paint(current); renderSessions(); input.focus();
+  upsert(current); paint(current); renderSessions();
+  refreshHero(); input.focus();
 }
 function openSession(id){
   var s = find(id);
   if (!s){ newChat(); return; }
   current = s; paint(s); renderSessions();
   if (sidebar) sidebar.classList.remove("open");
+  if (scrim) scrim.classList.remove("on");
 }
 /* --- sending --- */
-function busy(on){
-  send.disabled = on; input.disabled = on;
-  if (typing.classList) typing.classList.toggle("on", on);
-  send.textContent = on ? "\\u2026" : "Send";
+function autosize(){
+  input.style.height = "auto";
+  input.style.height = Math.min(200, input.scrollHeight) + "px";
+}
+function refreshSend(){
+  send.disabled = isBusy || !(input.value || "").trim();
+}
+function setBusy(on){
+  isBusy = on;
+  refreshSend();
+  typing.classList.toggle("on", on);
 }
 function sendMsg(){
   var text = (input.value || "").trim();
-  if (!text || send.disabled) return;
+  if (!text || isBusy) return;
   if (!current) newChat();
   current.messages.push({ role: "user", text: text, ts: Date.now() });
   current.ts = Date.now();
   upsert(current);
   bubble("user", text, false);
   renderSessions();
-  input.value = ""; input.style.height = "auto";
-  busy(true);
+  refreshHero();
+  input.value = ""; autosize();
+  setBusy(true);
   var mine = current;
   /* POST /public/chat — keyless, rate-limited per visitor, no scopes */
   fetch("/public/chat", {
@@ -862,7 +1415,7 @@ function sendMsg(){
     return r.json().then(function(j){ return [r.status, j]; });
   }).then(function(res){
     var status = res[0], j = res[1] || {};
-    busy(false);
+    setBusy(false);
     var reply = j.response
       || (j.error && j.error.message)
       || "I could not answer that — the request came back empty.";
@@ -870,14 +1423,15 @@ function sendMsg(){
       + "rate-limited per visitor. Try again in a few seconds.";
     if (j.session_id) mine.session_id = j.session_id;
     var atts = (j.meta && j.meta.attachments) || [];
-    mine.messages.push({ role: "ai", text: reply, ts: Date.now(), atts: atts });
+    mine.messages.push({ role: "ai", text: reply, ts: Date.now(),
+                         atts: atts });
     mine.ts = Date.now();
     upsert(mine);
     bubble("ai", reply, true, atts);
     renderSessions();
     input.focus();
   }).catch(function(){
-    busy(false);
+    setBusy(false);
     var err = "network error — nothing reached me. Try again.";
     mine.messages.push({ role: "ai", text: err, ts: Date.now() });
     upsert(mine);
@@ -892,29 +1446,49 @@ input.addEventListener("keydown", function(e){
   if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendMsg(); }
 });
 input.addEventListener("input", function(){
-  input.style.height = "auto";
-  input.style.height = Math.min(180, input.scrollHeight) + "px";
+  autosize(); refreshSend();
 });
-/* --- generative abilities: discovered at load, all local, all optional --- */
-var CAPS = { talk:false, images:false, listen:false, speak:false };
+if (filterInput) filterInput.addEventListener("input", renderSessions);
+/* suggestion chips fill the composer (and focus it) */
+Array.prototype.forEach.call(document.querySelectorAll(".chip"),
+function(ch){
+  ch.addEventListener("click", function(){
+    input.value = ch.getAttribute("data-msg") || "";
+    autosize(); refreshSend(); input.focus();
+  });
+});
+/* --- live status line (mood + autonomy), polled, cheap --- */
+function statusTick(){
+  fetch("/healthz").then(function(r){ return r.json(); })
+    .then(function(j){
+      var d = document.getElementById("agentstatus");
+      var dot = document.getElementById("livedot");
+      if (d) d.textContent = (j.mood || "online") + " · "
+        + (j.autonomy ? "thinks on its own" : "autonomy paused");
+      if (dot) dot.className = "live" + (j.autonomy ? "" : " off");
+    }).catch(function(){});
+}
+statusTick();
+setInterval(statusTick, 45000);
+/* --- generative abilities: discovered at load, all optional --- */
 var micBtn = document.getElementById("mic");
 fetch("/v1/generate/capabilities").then(function(r){ return r.json(); })
 .then(function(j){
   var c = (j && j.capabilities) || {};
   Object.keys(CAPS).forEach(function(k){ CAPS[k] = !!(c[k] && c[k].enabled); });
   if (CAPS.listen && navigator.mediaDevices && window.MediaRecorder)
-    micBtn.style.display = "";
+    micBtn.style.display = "grid";
   var hints = [];
   if (CAPS.talk) hints.push("talk about anything");
-  if (CAPS.images) hints.push("\\"draw me a …\\"");
-  hints.push("\\"make a presentation about …\\"");
-  if (CAPS.speak) hints.push("🔊 read aloud");
+  if (CAPS.images) hints.push("\\u201Cdraw me a …\\u201D");
+  hints.push("\\u201Cmake a presentation about …\\u201D");
+  if (CAPS.speak) hints.push("\\u{1F50A} read aloud");
   input.placeholder = hints.join(" · ") + " · Enter sends";
 }).catch(function(){});
 var rec = null, chunks = [];
 function stopRec(){
   if (rec && rec.state !== "inactive") rec.stop();
-  micBtn.classList.remove("rec"); micBtn.textContent = "🎤";
+  micBtn.classList.remove("rec");
 }
 micBtn.addEventListener("click", function(){
   if (rec && rec.state === "recording"){ stopRec(); return; }
@@ -927,21 +1501,25 @@ micBtn.addEventListener("click", function(){
       var blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
       var fr = new FileReader();
       fr.onload = function(){
-        busy(true);
+        setBusy(true);
         fetch("/public/transcribe", { method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ audio: fr.result, mime: blob.type }) })
         .then(function(r){ return r.json(); })
         .then(function(j){
-          busy(false);
-          if (j.text){ input.value = j.text; sendMsg(); }
-          else bubble("ai", "I could not hear that" + (j.error ? ": " + j.error.message : "."), true);
-        }).catch(function(){ busy(false); });
+          setBusy(false);
+          if (j.text){ input.value = j.text; autosize(); refreshSend();
+            sendMsg(); }
+          else {
+            var f = bubble("ai", "I could not hear that"
+              + (j.error ? ": " + j.error.message : "."), true);
+          }
+        }).catch(function(){ setBusy(false); });
       };
       fr.readAsDataURL(blob);
     };
     rec.start();
-    micBtn.classList.add("rec"); micBtn.textContent = "⏹";
+    micBtn.classList.add("rec");
     setTimeout(stopRec, 30000);
   }).catch(function(){
     bubble("ai", "The browser did not allow microphone access.", true);
@@ -951,31 +1529,35 @@ micBtn.addEventListener("click", function(){
   var list = load();
   if (list.length) openSession(list[0].id); else newChat();
   renderSessions();
+  refreshSend();
 })();
 </script>
 </body></html>"""
 
 
 def chat_page(agent: Any, tagline: Optional[str] = None) -> str:
-    """The branded chat app served at ``/``."""
+    """The chat app served at ``/``."""
     snap = agent.mind.snapshot()
     cfg = agent.cfg
     name = snap["agent"]
     body = _CHAT_BODY.substitute(
         agent=esc(name),
-        tagline=esc(tagline or cfg.brand_tagline),
-        rate=int(getattr(cfg, "demo_rate_per_min", 12)))
-    return (_head(name, f"{name} — your own AI, live", "chat",
-                  f"Chat with {name}: talk, draw images, build presentations. "
-                  f"No key, no signup.")
-            + body + _footer(agent) + _NAV_JS
-            + _CHAT_JS.replace("@@AGENT@@", esc(name)))
+        tagline=esc(tagline or cfg.brand_tagline))
+    return (_chat_head(name, f"{name} — your own AI, live",
+                       f"Chat with {name}: talk, draw images, build "
+                       f"presentations. No key, no signup.")
+            + body + _chrome_js()
+            + _CHAT_JS.replace("@@AGENT@@", esc(name))
+                      .replace("@@MARK@@", _js_str(MARK_DECORATIVE))
+                      .replace("@@COPY@@", _js_str(IC_COPY))
+                      .replace("@@SPEAK@@", _js_str(IC_SPEAK))
+                      .replace("@@DL@@", _js_str(IC_DL)))
 
 
 # --------------------------------------------------------- developer portal
 
 _DEV_BODY = Template("""
-<main>
+<main class="page-main">
 <h1>Developers</h1>
 <p class="tag">Every endpoint below is read live from the agent's own route
  registry — the same data <a href="/api.json">/api.json</a> serves — so this
@@ -994,7 +1576,7 @@ _DEV_BODY = Template("""
      placeholder="a small dashboard for my workshop"></div>
   </div>
   <div class="rowbtns">
-   <button class="act" type="submit" id="reqsend">Request access</button>
+   <button class="btn btn-p" type="submit" id="reqsend">Request access</button>
    <span class="hint" style="align-self:center">You start PENDING. The owner
     hears about it on Telegram <b>and</b> by email, then decides from
     <code>/approve</code>. No key exists until they mint one.</span>
@@ -1005,30 +1587,30 @@ _DEV_BODY = Template("""
 
 <div class="card">
  <div class="k">authenticating</div>
- <p class="dim" style="margin-top:0">Gated routes take an owner-issued key as a
-  bearer token. A key passes when it holds at least one of the route's scopes;
-  <code>owner</code> implies everything. Requests are counted even when they
-  fail.</p>
+ <p class="dim" style="margin-top:0;font-size:13.5px">Gated routes take an
+  owner-issued key as a bearer token. A key passes when it holds at least one
+  of the route's scopes; <code>owner</code> implies everything. Requests are
+  counted even when they fail.</p>
  <pre><code>curl -s https://$host/v1/chat \\
   -H "Authorization: Bearer rxa_..." \\
   -H "Content-Type: application/json" \\
   -d '{"message": "status"}'</code></pre>
  <div class="rowbtns">
-  <button class="ghost" id="copycurl">copy curl</button>
-  <a class="ghost" style="padding:8px 13px" href="/api.json">raw index
-   (JSON)</a>
-  <a class="ghost" style="padding:8px 13px" href="/dashboard">live
-   telemetry</a>
+  <button class="btn btn-g" id="copycurl" type="button">copy curl</button>
+  <a class="btn btn-g" href="/api.json">raw index (JSON)</a>
+  <a class="btn btn-g" href="/dashboard">live telemetry</a>
  </div>
 </div>
 
 <div class="card">
  <div class="k">live endpoint table · $count routes</div>
+ <div style="overflow-x:auto">
  <table id="endpoints">
   <thead><tr><th>method</th><th>path</th><th>access</th>
    <th>what it does</th></tr></thead>
   <tbody>$rows</tbody>
  </table>
+ </div>
  <div class="hint" id="livehint">rendered server-side; checking against
   <code>/api.json</code>…</div>
 </div>
@@ -1048,9 +1630,11 @@ _DEV_BODY = Template("""
    <code>/v1/counters</code> or watch it live at
    <a href="/dashboard">/dashboard</a>.</p></div>
  </div>
- <h2 style="margin-top:18px">status codes</h2>
+ <h2 style="margin-top:18px;font-size:15px;letter-spacing:-.01em">status
+  codes</h2>
  <table><tbody>$errors</tbody></table>
-</div>""")
+</div>
+</main>""")
 
 #: Plain string: ``@@HOST@@`` is substituted by :func:`developers_page`.
 _DEV_JS = """
@@ -1156,14 +1740,14 @@ def developers_page(agent: Any, routes: Iterable[Dict[str, Any]],
                   "developers",
                   "Live endpoint reference and key requests for the RealAI "
                   "API.")
-            + body + _footer(agent) + _NAV_JS
+            + body + _footer(agent) + _chrome_js()
             + _DEV_JS.replace("@@HOST@@", esc(host)))
 
 
 # -------------------------------------------------------- owner approval box
 
 _APPROVE_BODY = Template("""
-<main>
+<main class="page-main">
 <h1>Approvals</h1>
 <p class="tag">Your inbox. Every client starts <b>PENDING</b> and gets nothing
  until you decide here — or from Telegram with
@@ -1172,11 +1756,12 @@ _APPROVE_BODY = Template("""
  fetched later, and it is never emailed.</p>
 
 $warning
-<div id="keybox" class="card" style="border-color:#2c6b4c">
- <div class="k ok">key issued — copy it now, it will not be shown again</div>
+<div id="keybox" class="card">
+ <div class="k ok" style="color:var(--ok)">key issued — copy it now, it will
+  not be shown again</div>
  <div class="kv" id="keyval"></div>
- <div class="rowbtns" style="margin-top:10px">
-  <button class="ghost" id="keycopy">copy key</button>
+ <div class="rowbtns" style="margin-top:12px">
+  <button class="btn btn-p" id="keycopy" type="button">copy key</button>
   <span class="hint" id="keymeta" style="align-self:center"></span>
  </div>
 </div>
@@ -1212,7 +1797,8 @@ $warning
   <div class="tile"><h3>Unban</h3><p>Status → PENDING. They are back in the
    queue above, but they still need a fresh approval to get a key.</p></div>
  </div>
-</div>""")
+</div>
+</main>""")
 
 #: Plain string: ``@@TOKEN@@`` is substituted by :func:`approve_page`.
 _APPROVE_JS = """
@@ -1220,7 +1806,7 @@ _APPROVE_JS = """
 var TOKEN = "@@TOKEN@@";
 function flash(htmlText, kind){
   document.getElementById("flash").innerHTML =
-    '<div class="note ' + (kind || "") + '">' + htmlText + '</div>';
+    '<div class="note ' + (kind || "") + '">' + htmlText + "</div>";
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function buttonsFor(username){
@@ -1306,13 +1892,13 @@ def _user_row(user: Dict[str, Any], buttons: str) -> str:
             f"<td><div class='rowbtns'>{buttons}</div></td></tr>")
 
 
-def _button(username: str, action: str, label: str, css: str = "ghost",
+def _button(username: str, action: str, label: str, css: str = "btn btn-g",
             vip: Optional[bool] = None) -> str:
     extra = "" if vip is None else f", {'true' if vip else 'false'}"
     name = esc(username)
     return (f"<button class='{css}' data-u='{name}' "
-            f"onclick=\"act('{name}','{esc(action)}'{extra})\">"
-            f"{esc(label)}</button>")
+            f"onclick=\"act('{name}','{esc(action)}'{extra})\" "
+            f"type=\"button\">{esc(label)}</button>")
 
 
 def _user_table(users: List[Dict[str, Any]], buttons_for: Any) -> str:
@@ -1344,8 +1930,8 @@ def approve_page(agent: Any, token: str = "",
     if pending:
         pending_rows = _user_table(
             pending,
-            lambda u: _button(u["username"], "approve", "Approve", "good")
-            + _button(u["username"], "deny", "Deny", "danger"))
+            lambda u: _button(u["username"], "approve", "Approve", "btn btn-p")
+            + _button(u["username"], "deny", "Deny", "btn btn-d"))
     else:
         pending_rows = ("<p class='dim'>Nobody is waiting. Requests from "
                         "<a href='/developers'>/developers</a> land here "
@@ -1355,8 +1941,8 @@ def approve_page(agent: Any, token: str = "",
             approved,
             lambda u: _button(u["username"], "vip",
                               "Remove VIP" if u.get("is_vip") else "Make VIP",
-                              "ghost", vip=not bool(u.get("is_vip")))
-            + _button(u["username"], "deny", "Deny", "danger"))
+                              "btn btn-g", vip=not bool(u.get("is_vip")))
+            + _button(u["username"], "deny", "Deny", "btn btn-d"))
     else:
         approved_rows = "<p class='dim'>No approved clients yet.</p>"
     banned_rows = _user_table(
@@ -1371,7 +1957,7 @@ def approve_page(agent: Any, token: str = "",
         scopes=esc(", ".join(_USER_SCOPES)))
     return (_head(snap["agent"], f"{snap['agent']} — approvals", "approve",
                   "Owner approval inbox: approve, deny, unban and VIP.")
-            + body + _footer(agent) + _NAV_JS
+            + body + _footer(agent) + _chrome_js()
             + _APPROVE_JS.replace("@@TOKEN@@", esc(token or "")))
 
 
@@ -1384,27 +1970,26 @@ def locked_page(retry: int) -> str:
     """
     retry = max(1, int(retry))
     return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,"
-        "initial-scale=1\"><title>RealAI — too many attempts</title>"
-        "<meta http-equiv=\"refresh\" content=\"" + str(retry) + "\">"
-        "<style>body{background:#0b0e14;color:#d7dce5;margin:0;"
-        "font:15px/1.6 ui-sans-serif,system-ui,sans-serif;display:flex;"
-        "align-items:center;justify-content:center;min-height:100vh}"
-        "main{background:#12161f;border:1px solid #1f2633;border-radius:14px;"
-        "padding:26px;max-width:460px;width:calc(100% - 40px)}h1{font-size:19px;"
-        "margin:0 0 8px}p{color:#8b94a7;font-size:13.5px;margin:0 0 10px}"
-        "code{background:#0e1219;border:1px solid #1f2633;border-radius:6px;"
-        "padding:1px 6px;color:#7aa2f7}a{color:#7aa2f7}</style></head>"
-        "<body><main><h1>Too many wrong web tokens</h1>"
+        "<!doctype html><html lang=\"en\" data-theme=\"light\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>RealAI — too many attempts</title>"
+        "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/logo.svg\">"
+        "<meta name=\"theme-color\" content=\"#ffffff\">"
+        f"<meta http-equiv=\"refresh\" content=\"{retry}\">"
+        f"<script>{THEME_BOOT}</script>"
+        f"<style>{_CSS}</style></head><body class=\"page\">"
+        "<div class=\"gate-wrap\"><div class=\"gate-card\">"
+        f"{_logo_mark()}"
+        "<h1>Too many wrong web tokens</h1>"
         "<p>This visitor has been locked out of the owner surfaces for about "
-        "<code>" + str(retry) + "s</code>. The page reloads itself when the "
-        "lockout expires.</p>"
+        f"<code>{retry}s</code>. The page reloads itself when the lockout "
+        "expires.</p>"
         "<p>The attempt was counted in the agent ledger and the owner was "
         "told — this gate protects key minting, so it is deliberately "
         "unforgiving.</p>"
-        "<p><a href=\"/\">← back to the chat app</a></p>"
-        "</main></body></html>")
+        "<p class=\"gate-back\"><a href=\"/\">← back to the chat app</a></p>"
+        "</div></div></body></html>")
 
 
 # ------------------------------------------------------------------ plumbing

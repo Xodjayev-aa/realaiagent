@@ -24,6 +24,12 @@ A fully local, owner-controlled cognitive AI agent.
   with AI cover slides and voice on the free Vercel tier through a
   keyless public inference API (no account, no key); every generated
   file is archived to the owner's Telegram (forum topics as folders).
+- 0.7.0: the interface grew up. A senior-level, ChatGPT/Gemini-grade
+  chat experience — quiet searchable sidebar, centered empty state
+  with suggestion chips, one pill composer, clean bubbles, live mood
+  status — light and dark themes (system default, toggleable), and a
+  new count-ring mark: a ring with one opening and one dot, a thought
+  being counted (hand-written SVG, also the favicon).
 
 Pure Python standard library, no third-party packages. The agent - its
 mind, memory, ledger and controls - is 100% the owner's code; generative
@@ -33,6 +39,6 @@ provider).
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = ["__version__"]
